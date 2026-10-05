@@ -3,9 +3,12 @@ import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { McpAgent } from "agents/mcp";
 import { isAllowedEmail } from "./auth";
 import { GoogleHandler } from "./google-handler";
+import { purgeOldAudit } from "./guardrails";
 import { registerReadTools } from "./read-tools";
 import type { Props } from "./utils";
 import { registerWriteTools } from "./write-tools";
+
+export { UsageCounter } from "./usage-counter";
 
 export class GoBridgeMCP extends McpAgent<Env, Record<string, never>, Props> {
 	server = new McpServer({
@@ -14,7 +17,7 @@ export class GoBridgeMCP extends McpAgent<Env, Record<string, never>, Props> {
 	});
 
 	async init() {
-		registerReadTools(this.server, this.env);
+		registerReadTools(this.server, this.env, () => this.props);
 		registerWriteTools(this.server, this.env, () => this.props);
 	}
 }
@@ -60,5 +63,15 @@ export default {
 	fetch(request: Request, env: Env, ctx: ExecutionContext) {
 		provider ??= createProvider(env);
 		return provider.fetch(request, env, ctx);
+	},
+
+	// Daily cron: delete audit rows older than 90 days.
+	async scheduled(_controller: ScheduledController, env: Env, _ctx: ExecutionContext) {
+		try {
+			const deleted = await purgeOldAudit(env);
+			console.log(`cron audit_cleanup ok: deleted=${deleted}`);
+		} catch (_e) {
+			console.error("cron audit_cleanup error: internal");
+		}
 	},
 };

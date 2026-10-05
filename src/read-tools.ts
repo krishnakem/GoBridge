@@ -7,9 +7,10 @@
  */
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { z } from "zod";
-import { ALIAS_PATTERN, listAccounts } from "./accounts";
+import { ALIAS_PATTERN, getAccount, listAccounts } from "./accounts";
 import { b64urlDecode } from "./crypto";
 import { googleGet, googleGetJson, readTextCapped, ToolError } from "./google-api";
+import { enforceReadRateLimit, recordReadAudit } from "./guardrails";
 
 const GMAIL = "https://gmail.googleapis.com/gmail/v1/users/me";
 const CALENDAR = "https://www.googleapis.com/calendar/v3/calendars";
@@ -551,7 +552,25 @@ export const failure = (message: string): ToolResult => ({
  * Validates input, runs the tool, and turns every failure into a short, safe
  * message. No stack traces, tokens, or raw Google responses reach the client.
  */
-export async function runReadTool(env: Env, name: string, rawArgs: unknown): Promise<ToolResult> {
+/** Which list in each tool's result to count for the audit log; other tools return one item. */
+const RESULT_LISTS: Record<string, string> = {
+	list_accounts: "accounts",
+	list_drafts: "drafts",
+	list_events: "events",
+	list_labels: "labels",
+	read_thread: "messages",
+	search_drive: "files",
+	search_emails: "messages",
+};
+
+export type ReadClient = { clientId?: string; clientName?: string } | undefined;
+
+export async function runReadTool(
+	env: Env,
+	name: string,
+	rawArgs: unknown,
+	client?: ReadClient,
+): Promise<ToolResult> {
 	const definition = READ_TOOLS.find((t) => t.name === name);
 	if (!definition) return failure("Unknown tool.");
 
@@ -564,23 +583,68 @@ export async function runReadTool(env: Env, name: string, rawArgs: unknown): Pro
 			.join("; ");
 		return failure(`Invalid input: ${details}`.slice(0, 500));
 	}
-	const alias = typeof parsed.data.account === "string" ? ` alias=${parsed.data.account}` : "";
+	const account = typeof parsed.data.account === "string" ? parsed.data.account : "";
+	const alias = account ? ` alias=${account}` : "";
 
+	let reachedTool = false;
+	let outcome = "ok";
+	let resultCount: number | undefined;
+	let response: ToolResult;
+	const clientId = client?.clientId;
 	try {
-		const result = await definition.run(env, parsed.data);
-		console.log(`tool=${name}${alias} ok`);
-		return { content: [{ text: JSON.stringify(result, null, 1), type: "text" }] };
-	} catch (error) {
-		if (error instanceof ToolError) {
-			console.warn(`tool=${name}${alias} error=${error.category}`);
-			return failure(error.message);
+		if (!clientId) {
+			// Every read must be attributable to a client in the audit log.
+			throw new ToolError(
+				"client_unknown",
+				"This connection has no client identity. Disconnect and reconnect GoBridge in your AI client, then try again.",
+			);
 		}
-		console.warn(`tool=${name}${alias} error=internal`);
-		return failure("Something went wrong inside GoBridge. Nothing was changed.");
+		if (account && !(await getAccount(env, account))) {
+			throw new ToolError(
+				"unknown_alias",
+				`No linked account has the alias "${account}". Use list_accounts to see the linked accounts.`,
+			);
+		}
+		await enforceReadRateLimit(env, account);
+		reachedTool = true;
+		const result = await definition.run(env, parsed.data);
+		const list = (result as Record<string, unknown> | null)?.[RESULT_LISTS[name] ?? ""];
+		resultCount = Array.isArray(list) ? list.length : 1;
+		console.log(`tool=${name}${alias} ok`);
+		response = { content: [{ text: JSON.stringify(result, null, 1), type: "text" }] };
+	} catch (error) {
+		outcome = error instanceof ToolError ? error.category : "internal";
+		console.warn(`tool=${name}${alias} error=${outcome}`);
+		response = failure(
+			error instanceof ToolError
+				? error.message
+				: "Something went wrong inside GoBridge. Nothing was changed.",
+		);
 	}
+
+	// Minimal audit entry: never the query, ids, subjects or content.
+	if (reachedTool && clientId) {
+		try {
+			await recordReadAudit(env, {
+				alias: account,
+				clientId,
+				clientName: client?.clientName ?? "",
+				outcome,
+				resultCount,
+				tool: name,
+			});
+		} catch (_e) {
+			console.error(`tool=${name}${alias} error=audit_write_failed`);
+		}
+	}
+	return response;
 }
 
-export function registerReadTools(server: McpServer, env: Env): void {
+export function registerReadTools(
+	server: McpServer,
+	env: Env,
+	client: () => ReadClient = () => undefined,
+): void {
 	for (const definition of READ_TOOLS) {
 		server.registerTool(
 			definition.name,
@@ -590,7 +654,7 @@ export function registerReadTools(server: McpServer, env: Env): void {
 				inputSchema: definition.schema.shape,
 				title: definition.title,
 			},
-			(args: unknown) => runReadTool(env, definition.name, args),
+			(args: unknown) => runReadTool(env, definition.name, args, client()),
 		);
 	}
 }
