@@ -1,6 +1,13 @@
 import type { AuthRequest, OAuthHelpers } from "@cloudflare/workers-oauth-provider";
 import { Hono } from "hono";
-import { getUpstreamAuthorizeUrl, OWNER_LOGIN_SCOPES } from "./utils";
+import { verifyOwner } from "./auth";
+import { renderMessagePage } from "./html";
+import {
+	fetchGoogleIdentityClaims,
+	getUpstreamAuthorizeUrl,
+	OWNER_LOGIN_SCOPES,
+	type Props,
+} from "./utils";
 import {
 	addApprovedClient,
 	bindStateToSession,
@@ -14,6 +21,9 @@ import {
 } from "./workers-oauth-utils";
 
 const app = new Hono<{ Bindings: Env & { OAUTH_PROVIDER: OAuthHelpers } }>();
+
+// Health check: no data, no auth.
+app.get("/health", (c) => c.text("ok"));
 
 app.get("/authorize", async (c) => {
 	const oauthReqInfo = await c.env.OAUTH_PROVIDER.parseAuthRequest(c.req.raw);
@@ -128,15 +138,16 @@ async function redirectToGoogle(
  * 1. A valid state token in KV (proves it was created by our server)
  * 2. The __Host-CONSENTED_STATE cookie (proves THIS browser consented to it)
  *
- * FAIL CLOSED: the owner allowlist check (email_verified === true and email
- * matching ALLOWED_EMAIL) is build-order step 2. Until it exists, this route
- * never exchanges the code and never issues a grant or token to anyone.
+ * It then requires Google to report email_verified === true and an email equal
+ * to ALLOWED_EMAIL. Anyone else is rejected and NO grant or token is issued.
  */
 app.get("/callback", async (c) => {
+	let oauthReqInfo: AuthRequest;
 	let clearSessionCookie: string;
 
 	try {
 		const result = await validateOAuthState(c.req.raw, c.env.OAUTH_KV);
+		oauthReqInfo = result.oauthReqInfo;
 		clearSessionCookie = result.clearCookie;
 	} catch (error: any) {
 		if (error instanceof OAuthError) {
@@ -145,11 +156,59 @@ app.get("/callback", async (c) => {
 		return c.text("Internal server error", 500);
 	}
 
-	const headers = new Headers({ "Content-Type": "text/plain; charset=utf-8" });
+	// The session binding cookie is one-time use, whatever the outcome.
+	const headers = new Headers();
 	if (clearSessionCookie) {
 		headers.set("Set-Cookie", clearSessionCookie);
 	}
-	return new Response("GoBridge sign-in is not enabled yet.", { status: 403, headers });
+
+	const code = c.req.query("code");
+	if (!oauthReqInfo.clientId || !code) {
+		return renderMessagePage("Sign-in failed", "The sign-in request was incomplete.", 400, headers);
+	}
+
+	const claims = await fetchGoogleIdentityClaims({
+		clientId: c.env.GOOGLE_CLIENT_ID,
+		clientSecret: c.env.GOOGLE_CLIENT_SECRET,
+		code,
+		redirectUri: new URL("/callback", c.req.url).href,
+	});
+	if (!claims) {
+		console.warn("GET /callback denied: google_exchange_failed");
+		return renderMessagePage(
+			"Sign-in failed",
+			"Google sign-in could not be completed. Please try again.",
+			502,
+			headers,
+		);
+	}
+
+	const owner = verifyOwner(claims, c.env.ALLOWED_EMAIL);
+	if (!owner) {
+		console.warn("GET /callback denied: not_allowed");
+		return renderMessagePage(
+			"Access denied",
+			"This Google account is not allowed to use GoBridge.",
+			403,
+			headers,
+		);
+	}
+
+	// Only the owner reaches this point. Props carry the email only: no Google token.
+	const { redirectTo } = await c.env.OAUTH_PROVIDER.completeAuthorization({
+		metadata: {
+			label: owner.email,
+		},
+		props: {
+			email: owner.email,
+		} as Props,
+		request: oauthReqInfo,
+		scope: oauthReqInfo.scope,
+		userId: owner.sub,
+	});
+
+	headers.set("Location", redirectTo);
+	return new Response(null, { status: 302, headers });
 });
 
 export { app as GoogleHandler };
