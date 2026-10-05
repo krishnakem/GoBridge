@@ -233,9 +233,9 @@ app.get("/settings", async (c) => {
 		.map(
 			(account, i) => `<tr>
 <td><strong>${escapeHtml(account.alias)}</strong><br><span class="muted small">${escapeHtml(account.email)}</span></td>
-<td>${usage[i].sendsToday} of ${cap}</td>
-<td>${usage[i].writesThisHour} of ${WRITE_RATE_LIMIT_PER_HOUR}</td>
-<td>${usage[i].readsThisHour} of ${readRateLimit(c.env)}</td>
+<td>${usage[i] ? `${usage[i].sendsToday} of ${cap}` : "unavailable"}</td>
+<td>${usage[i] ? `${usage[i].writesThisHour} of ${WRITE_RATE_LIMIT_PER_HOUR}` : "unavailable"}</td>
+<td>${usage[i] ? `${usage[i].readsThisHour} of ${readRateLimit(c.env)}` : "unavailable"}</td>
 <td>${
 				attention.relink.includes(account.alias)
 					? '<span class="badge badge-alert">Needs re-link</span>'

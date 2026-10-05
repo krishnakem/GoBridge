@@ -9,6 +9,7 @@
 		"typecheck": "tsc --noEmit",
 		"test": "vitest run",
 		"predeploy": "npm run typecheck && npm run test",
+		"migrate:dev": "wrangler d1 migrations apply AUDIT_DB --env dev --remote",
 		"deploy:dev": "npm run predeploy && wrangler deploy --env dev",
 		"deploy:prod": "npm run predeploy && wrangler deploy --env production",
 		"hooks:install": "git config core.hooksPath .githooks"

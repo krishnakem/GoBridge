@@ -2,7 +2,8 @@
  * GoBridge Wrangler configuration.
  * https://developers.cloudflare.com/workers/wrangler/configuration/
  *
- * Two environments, each with its OWN KV namespaces and secrets:
+ * Two environments, each with its OWN KV namespaces, D1 audit database,
+ * Durable Objects and secrets:
  *   dev        -> worker "gobridge-dev"  (npm run deploy:dev)
  *   production -> worker "gobridge"      (owner only: npm run deploy:prod)
  *
@@ -39,8 +40,16 @@
 		{
 			"new_sqlite_classes": ["GoBridgeMCP"],
 			"tag": "v1"
+		},
+		{
+			"new_sqlite_classes": ["UsageCounter"],
+			"tag": "v2"
 		}
 	],
+	// Daily at 03:17 UTC: delete audit rows older than 90 days.
+	"triggers": {
+		"crons": ["17 3 * * *"]
+	},
 	"env": {
 		"dev": {
 			"name": "gobridge-dev",
@@ -60,12 +69,22 @@
 				]
 			},
 			"durable_objects": {
-				"bindings": [{ "class_name": "GoBridgeMCP", "name": "MCP_OBJECT" }]
+				"bindings": [
+					{ "class_name": "GoBridgeMCP", "name": "MCP_OBJECT" },
+					{ "class_name": "UsageCounter", "name": "USAGE_COUNTER" }
+				]
 			},
 			"kv_namespaces": [
 				{ "binding": "OAUTH_KV", "id": "ff78f65975ba4390bb54ae3ea18c7977" },
-				{ "binding": "GOOGLE_TOKENS", "id": "b17315b18c484813b41fe84d4f8528a4" },
-				{ "binding": "AUDIT_LOG", "id": "459ab29d5e92430bb55fcf1d60c40723" }
+				{ "binding": "GOOGLE_TOKENS", "id": "b17315b18c484813b41fe84d4f8528a4" }
+			],
+			"d1_databases": [
+				{
+					"binding": "AUDIT_DB",
+					"database_name": "gobridge-audit-dev",
+					"database_id": "ed679f78-421f-45f3-be6f-bd71fa3f1ca4",
+					"migrations_dir": "migrations"
+				}
 			]
 		},
 		"production": {
@@ -86,12 +105,22 @@
 				]
 			},
 			"durable_objects": {
-				"bindings": [{ "class_name": "GoBridgeMCP", "name": "MCP_OBJECT" }]
+				"bindings": [
+					{ "class_name": "GoBridgeMCP", "name": "MCP_OBJECT" },
+					{ "class_name": "UsageCounter", "name": "USAGE_COUNTER" }
+				]
 			},
 			"kv_namespaces": [
 				{ "binding": "OAUTH_KV", "id": "REPLACE_WITH_PROD_OAUTH_KV_ID" },
-				{ "binding": "GOOGLE_TOKENS", "id": "REPLACE_WITH_PROD_GOOGLE_TOKENS_ID" },
-				{ "binding": "AUDIT_LOG", "id": "REPLACE_WITH_PROD_AUDIT_LOG_ID" }
+				{ "binding": "GOOGLE_TOKENS", "id": "REPLACE_WITH_PROD_GOOGLE_TOKENS_ID" }
+			],
+			"d1_databases": [
+				{
+					"binding": "AUDIT_DB",
+					"database_name": "gobridge-audit",
+					"database_id": "REPLACE_WITH_PROD_AUDIT_DB_ID",
+					"migrations_dir": "migrations"
+				}
 			]
 		}
 	}

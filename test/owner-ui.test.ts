@@ -216,7 +216,8 @@ describe("/settings", () => {
 			scopes: [],
 			sub: "settings-sub",
 		});
-		await env.AUDIT_LOG.put(`sendcap:settings-acct:${new Date().toISOString().slice(0, 10)}`, "3");
+		const counter = env.USAGE_COUNTER.get(env.USAGE_COUNTER.idFromName("settings-acct"));
+		for (let i = 0; i < 3; i++) await counter.take("send", 25);
 		const owner = await signIn("/settings");
 		const html = await (await get("/settings", owner.cookie)).text();
 
@@ -296,7 +297,7 @@ describe("attention dot", () => {
 		expect(await (await get("/link", owner.cookie)).text()).not.toContain('class="dot"');
 
 		// Google rejects the refresh token during a tool call: the account is flagged.
-		const res = await runReadTool(env, "list_labels", { account: "stale-acct" });
+		const res = await runReadTool(env, "list_labels", { account: "stale-acct" }, { clientId: "client-stale-1" });
 		expect(res.content[0].text).toContain("re-link this account at /link");
 		expect(await aliasesNeedingRelink(env)).toContain("stale-acct");
 

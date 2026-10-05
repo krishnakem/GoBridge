@@ -1,7 +1,7 @@
-import { cloudflareTest } from "@cloudflare/vitest-pool-workers";
+import { cloudflareTest, readD1Migrations } from "@cloudflare/vitest-pool-workers";
 import { defineConfig } from "vitest/config";
 
-export default defineConfig({
+export default defineConfig(async () => ({
 	plugins: [
 		cloudflareTest({
 			wrangler: { configPath: "./wrangler.jsonc", environment: "dev" },
@@ -18,11 +18,14 @@ export default defineConfig({
 					COOKIE_ENCRYPTION_KEY: "test-cookie-key-not-a-real-secret-0000",
 					// 64 hex zeros: a valid key shape that is obviously not a real key.
 					TOKEN_ENCRYPTION_KEY: "0".repeat(64),
+					// The audit tables, applied to the local test database before each file.
+					TEST_MIGRATIONS: await readD1Migrations("./migrations"),
 				},
 			},
 		}),
 	],
 	test: {
 		include: ["test/**/*.test.ts"],
+		setupFiles: ["./test/apply-migrations.ts"],
 	},
-});
+}));

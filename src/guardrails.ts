@@ -1,30 +1,31 @@
 /**
- * Write guardrails (SPEC.md, non-negotiable):
+ * Guardrails for the MCP tools.
+ *
+ * Writes (SPEC.md, non-negotiable):
  *   - WRITES_ENABLED kill switch
  *   - rate limit: 60 write-tool calls per account per hour
  *   - daily cap on send_draft per account (DAILY_SEND_CAP, default 25)
- *   - audit log of every write in KV AUDIT_LOG, 90-day TTL, never bodies
+ *   - audit log of every write, kept 90 days, never bodies
  *
- * Read guardrails (added before launch):
- *   - rate limit: READ_RATE_LIMIT_PER_HOUR read-tool calls per account per hour
- *     (default 300)
+ * Reads:
+ *   - rate limit: READ_RATE_LIMIT_PER_HOUR calls per account per hour (default 300)
  *   - a minimal audit entry per read: who, which tool, outcome, result count.
  *     Never queries, ids, subjects, or content
  *
- * Counters live in AUDIT_LOG under their own prefixes. KV counters are not
- * atomic: the limits are firm for normal use but best-effort under bursts of
- * simultaneous calls.
+ * Counters live in the UsageCounter Durable Object (atomic). Every limit FAILS
+ * CLOSED: if the counter cannot be reached, the call is refused.
+ * The audit log lives in the D1 database AUDIT_DB; a daily cron trigger deletes
+ * rows older than 90 days.
  */
-import { randomToken } from "./crypto";
 import { ToolError } from "./google-api";
+import type { CounterKind } from "./usage-counter";
 
 export const WRITE_RATE_LIMIT_PER_HOUR = 60;
+export const AUDIT_RETENTION_DAYS = 90;
 const DEFAULT_DAILY_SEND_CAP = 25;
-const AUDIT_TTL_SECONDS = 90 * 24 * 60 * 60;
-const AUDIT_PREFIX = "audit:";
-/** Reads are stored apart from writes, so a busy day of reads never hides a write. */
-const READ_AUDIT_PREFIX = "readaudit:";
 const DEFAULT_READ_RATE_LIMIT = 300;
+/** Counter used by calls that have no account (list_accounts). */
+const NO_ACCOUNT = "(all)";
 
 /** Only the exact value "true" enables writes; anything else is off. */
 export function writesEnabled(env: Env): boolean {
@@ -36,38 +37,39 @@ export function dailySendCap(env: Env): number {
 	return Number.isInteger(parsed) && parsed >= 0 ? parsed : DEFAULT_DAILY_SEND_CAP;
 }
 
-async function increment(env: Env, key: string, limit: number, ttl: number): Promise<boolean> {
-	const current = Number.parseInt((await env.AUDIT_LOG.get(key)) ?? "0", 10) || 0;
-	if (current >= limit) return false;
-	await env.AUDIT_LOG.put(key, String(current + 1), { expirationTtl: ttl });
-	return true;
+export function readRateLimit(env: Env): number {
+	const parsed = Number.parseInt(env.READ_RATE_LIMIT_PER_HOUR, 10);
+	return Number.isInteger(parsed) && parsed >= 0 ? parsed : DEFAULT_READ_RATE_LIMIT;
 }
 
-const rateKey = (alias: string) => `rate:${alias}:${Math.floor(Date.now() / 3_600_000)}`;
-const readRateKey = (alias: string) =>
-	`readrate:${alias || "_none"}:${Math.floor(Date.now() / 3_600_000)}`;
-const sendCapKey = (alias: string) => `sendcap:${alias}:${new Date().toISOString().slice(0, 10)}`;
+function counterFor(env: Env, alias: string) {
+	return env.USAGE_COUNTER.get(env.USAGE_COUNTER.idFromName(alias || NO_ACCOUNT));
+}
 
-/** Read-only view of an account's counters, for the /settings page. */
-export async function writeUsage(
-	env: Env,
-	alias: string,
-): Promise<{ sendsToday: number; writesThisHour: number; readsThisHour: number }> {
-	const [sends, writes, reads] = await Promise.all([
-		env.AUDIT_LOG.get(sendCapKey(alias)),
-		env.AUDIT_LOG.get(rateKey(alias)),
-		env.AUDIT_LOG.get(readRateKey(alias)),
-	]);
-	return {
-		readsThisHour: Number.parseInt(reads ?? "0", 10) || 0,
-		sendsToday: Number.parseInt(sends ?? "0", 10) || 0,
-		writesThisHour: Number.parseInt(writes ?? "0", 10) || 0,
-	};
+/**
+ * Counts one call against a limit. Returns false when the limit is reached.
+ * Fails closed: if the counter cannot be reached or updated, the call is refused.
+ */
+async function take(env: Env, alias: string, kind: CounterKind, limit: number): Promise<boolean> {
+	let allowed: unknown;
+	try {
+		allowed = (await counterFor(env, alias).take(kind, limit)).allowed;
+	} catch (_e) {
+		allowed = undefined;
+	}
+	if (typeof allowed !== "boolean") {
+		console.error(`usage counter error: unavailable kind=${kind}`);
+		throw new ToolError(
+			"counter_unavailable",
+			"GoBridge could not check its usage limits, so nothing was done. Try again in a moment.",
+		);
+	}
+	return allowed;
 }
 
 /** Counts one write-tool call for this account; throws once the hourly limit is reached. */
 export async function enforceWriteRateLimit(env: Env, alias: string): Promise<void> {
-	if (!(await increment(env, rateKey(alias), WRITE_RATE_LIMIT_PER_HOUR, 2 * 3600))) {
+	if (!(await take(env, alias, "write", WRITE_RATE_LIMIT_PER_HOUR))) {
 		throw new ToolError(
 			"rate_limited",
 			`Rate limit reached: at most ${WRITE_RATE_LIMIT_PER_HOUR} write actions per account per hour. Try again later.`,
@@ -75,31 +77,14 @@ export async function enforceWriteRateLimit(env: Env, alias: string): Promise<vo
 	}
 }
 
-export function readRateLimit(env: Env): number {
-	const parsed = Number.parseInt(env.READ_RATE_LIMIT_PER_HOUR, 10);
-	return Number.isInteger(parsed) && parsed >= 0 ? parsed : DEFAULT_READ_RATE_LIMIT;
-}
-
-/**
- * Counts one read-tool call for this account; throws once the hourly limit is
- * reached. Reads often arrive several at once, and KV refuses rapid writes to
- * one key, so a failed counter update lets the read through (and is logged)
- * instead of failing it. A counter that is already at the limit always blocks.
- */
+/** Counts one read-tool call for this account; throws once the hourly limit is reached. */
 export async function enforceReadRateLimit(env: Env, alias: string): Promise<void> {
 	const limit = readRateLimit(env);
-	const key = readRateKey(alias);
-	const current = Number.parseInt((await env.AUDIT_LOG.get(key)) ?? "0", 10) || 0;
-	if (current >= limit) {
+	if (!(await take(env, alias, "read", limit))) {
 		throw new ToolError(
 			"rate_limited",
 			`Rate limit reached: at most ${limit} read actions per account per hour. Try again later.`,
 		);
-	}
-	try {
-		await env.AUDIT_LOG.put(key, String(current + 1), { expirationTtl: 2 * 3600 });
-	} catch (_e) {
-		console.warn("read rate counter error: kv_write_failed");
 	}
 }
 
@@ -109,11 +94,24 @@ export async function enforceReadRateLimit(env: Env, alias: string): Promise<voi
  */
 export async function reserveDailySend(env: Env, alias: string): Promise<void> {
 	const cap = dailySendCap(env);
-	if (!(await increment(env, sendCapKey(alias), cap, 2 * 24 * 3600))) {
+	if (!(await take(env, alias, "send", cap))) {
 		throw new ToolError(
 			"send_cap_reached",
 			`Daily send cap reached: at most ${cap} emails per account per day. Nothing was sent.`,
 		);
+	}
+}
+
+/** Read-only view of an account's counters, for the /settings page. Null if unavailable. */
+export async function writeUsage(
+	env: Env,
+	alias: string,
+): Promise<{ sendsToday: number; writesThisHour: number; readsThisHour: number } | null> {
+	try {
+		const usage = await counterFor(env, alias).usage();
+		return { readsThisHour: usage.read, sendsToday: usage.send, writesThisHour: usage.write };
+	} catch (_e) {
+		return null;
 	}
 }
 
@@ -136,8 +134,7 @@ export type AuditMeta = {
 };
 
 export type AuditEntry = {
-	/** Absent on entries written before reads were audited: those are writes. */
-	kind?: "read" | "write";
+	kind: "read" | "write";
 	ts: string;
 	alias: string;
 	clientId: string;
@@ -166,51 +163,69 @@ function sanitizeMeta(meta: AuditMeta): AuditMeta {
 		removeLabelIds: list(meta.removeLabelIds, 20),
 		response: clip(meta.response, 20),
 		sendUpdates: clip(meta.sendUpdates, 20),
-		resultCount: typeof meta.resultCount === "number" ? meta.resultCount : undefined,
 		subject: clip(meta.subject, 300),
 		summary: clip(meta.summary, 300),
 	};
 }
 
-async function putAudit(env: Env, prefix: string, record: AuditEntry): Promise<void> {
-	// Newest first when listed: keys sort by descending time.
-	const key = `${prefix}${String(9_999_999_999_999 - Date.parse(record.ts)).padStart(13, "0")}:${randomToken(6)}`;
-	await env.AUDIT_LOG.put(key, JSON.stringify(record), { expirationTtl: AUDIT_TTL_SECONDS });
+type AuditInput = {
+	alias: string;
+	clientId: string;
+	clientName: string;
+	tool: string;
+	outcome: string;
+};
+
+/** Records one write: recipients + subject, or event id + summary. Never bodies. */
+export async function recordAudit(env: Env, entry: AuditInput & { meta: AuditMeta }): Promise<void> {
+	await env.AUDIT_DB.prepare(
+		"INSERT INTO audit_writes (ts, alias, client_id, client_name, tool, outcome, meta) VALUES (?, ?, ?, ?, ?, ?, ?)",
+	)
+		.bind(
+			new Date().toISOString(),
+			entry.alias,
+			entry.clientId.slice(0, 200),
+			entry.clientName.slice(0, 100),
+			entry.tool,
+			entry.outcome.slice(0, 40),
+			JSON.stringify(sanitizeMeta(entry.meta)),
+		)
+		.run();
 }
 
 /**
- * Records one read. The entry type has no place for queries, ids, subjects or
+ * Records one read. The table has no column for queries, ids, subjects or
  * content: only who, which tool, the outcome and how many items came back.
  */
 export async function recordReadAudit(
 	env: Env,
-	entry: { alias: string; clientId: string; clientName: string; tool: string; outcome: string; resultCount?: number },
+	entry: AuditInput & { resultCount?: number },
 ): Promise<void> {
-	await putAudit(env, READ_AUDIT_PREFIX, {
-		alias: entry.alias,
-		clientId: entry.clientId.slice(0, 200),
-		clientName: entry.clientName.slice(0, 100),
-		kind: "read",
-		meta: typeof entry.resultCount === "number" ? { resultCount: entry.resultCount } : {},
-		outcome: entry.outcome.slice(0, 40),
-		tool: entry.tool,
-		ts: new Date().toISOString(),
-	});
+	await env.AUDIT_DB.prepare(
+		"INSERT INTO audit_reads (ts, alias, client_id, client_name, tool, outcome, result_count) VALUES (?, ?, ?, ?, ?, ?, ?)",
+	)
+		.bind(
+			new Date().toISOString(),
+			entry.alias,
+			entry.clientId.slice(0, 200),
+			entry.clientName.slice(0, 100),
+			entry.tool,
+			entry.outcome.slice(0, 40),
+			typeof entry.resultCount === "number" ? entry.resultCount : null,
+		)
+		.run();
 }
 
-export async function recordAudit(env: Env, entry: Omit<AuditEntry, "ts">): Promise<void> {
-	const record: AuditEntry = {
-		alias: entry.alias,
-		clientId: entry.clientId.slice(0, 200),
-		clientName: entry.clientName.slice(0, 100),
-		meta: sanitizeMeta(entry.meta),
-		outcome: entry.outcome.slice(0, 40),
-		kind: "write",
-		tool: entry.tool,
-		ts: new Date().toISOString(),
-	};
-	await putAudit(env, AUDIT_PREFIX, record);
-}
+type AuditRow = {
+	ts: string;
+	alias: string;
+	client_id: string;
+	client_name: string;
+	tool: string;
+	outcome: string;
+	meta?: string;
+	result_count?: number | null;
+};
 
 /** The most recent write (default) or read audit entries, newest first. */
 export async function listAudit(
@@ -218,18 +233,42 @@ export async function listAudit(
 	limit = 100,
 	kind: "write" | "read" = "write",
 ): Promise<AuditEntry[]> {
-	const page = await env.AUDIT_LOG.list({
-		limit,
-		prefix: kind === "read" ? READ_AUDIT_PREFIX : AUDIT_PREFIX,
-	});
-	const entries = await Promise.all(
-		page.keys.map(async (key) => {
+	const table = kind === "read" ? "audit_reads" : "audit_writes";
+	const { results } = await env.AUDIT_DB.prepare(
+		`SELECT * FROM ${table} ORDER BY ts DESC, id DESC LIMIT ?`,
+	)
+		.bind(limit)
+		.all<AuditRow>();
+	return results.map((row) => {
+		let meta: AuditMeta = {};
+		if (kind === "read") {
+			if (typeof row.result_count === "number") meta = { resultCount: row.result_count };
+		} else {
 			try {
-				return JSON.parse((await env.AUDIT_LOG.get(key.name)) ?? "null") as AuditEntry | null;
+				meta = JSON.parse(row.meta ?? "{}") as AuditMeta;
 			} catch (_e) {
-				return null;
+				meta = {};
 			}
-		}),
-	);
-	return entries.filter((entry): entry is AuditEntry => entry !== null);
+		}
+		return {
+			alias: row.alias,
+			clientId: row.client_id,
+			clientName: row.client_name,
+			kind,
+			meta,
+			outcome: row.outcome,
+			tool: row.tool,
+			ts: row.ts,
+		};
+	});
+}
+
+/** Deletes audit rows older than 90 days. Run daily by the cron trigger. */
+export async function purgeOldAudit(env: Env, now = Date.now()): Promise<number> {
+	const cutoff = new Date(now - AUDIT_RETENTION_DAYS * 24 * 60 * 60 * 1000).toISOString();
+	const results = await env.AUDIT_DB.batch([
+		env.AUDIT_DB.prepare("DELETE FROM audit_writes WHERE ts < ?").bind(cutoff),
+		env.AUDIT_DB.prepare("DELETE FROM audit_reads WHERE ts < ?").bind(cutoff),
+	]);
+	return results.reduce((total, result) => total + (result.meta.changes ?? 0), 0);
 }
