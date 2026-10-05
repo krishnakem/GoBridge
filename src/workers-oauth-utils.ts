@@ -765,7 +765,6 @@ export function renderApprovalDialog(request: Request, options: ApprovalDialogOp
               <input type="hidden" name="csrf_token" value="${csrfToken}">
 
               <div class="actions">
-                <button type="button" class="button button-secondary" onclick="window.history.back()">Cancel</button>
                 <button type="submit" class="button button-primary">Approve</button>
               </div>
             </form>
@@ -777,9 +776,13 @@ export function renderApprovalDialog(request: Request, options: ApprovalDialogOp
 
 	return new Response(htmlContent, {
 		headers: {
-			"Content-Security-Policy": "frame-ancestors 'none'",
+			"Cache-Control": "no-store",
+			"Content-Security-Policy":
+				"default-src 'none'; style-src 'unsafe-inline'; form-action 'self' https://accounts.google.com; frame-ancestors 'none'; base-uri 'none'",
 			"Content-Type": "text/html; charset=utf-8",
+			"Referrer-Policy": "no-referrer",
 			"Set-Cookie": setCookie,
+			"X-Content-Type-Options": "nosniff",
 			"X-Frame-Options": "DENY",
 		},
 	});
