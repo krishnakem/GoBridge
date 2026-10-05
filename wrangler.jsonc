@@ -22,8 +22,15 @@
 	"compatibility_flags": ["nodejs_compat"],
 	"workers_dev": true,
 	"preview_urls": false,
+	// Keep our own (content-free) log lines, but turn off the automatic
+	// per-request invocation logs: they record full request URLs, and the
+	// /callback and /link/callback URLs carry one-time Google auth codes.
 	"observability": {
-		"enabled": true
+		"enabled": true,
+		"logs": {
+			"enabled": true,
+			"invocation_logs": false
+		}
 	},
 	"dev": {
 		"port": 8788

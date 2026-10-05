@@ -21,3 +21,7 @@ dist/
 # OS / editor
 .DS_Store
 *.log
+
+# Owner-only review documents — keep local, like SPEC.md
+SECURITY_REVIEW.md
+PROD_CHECKLIST.md

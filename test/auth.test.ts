@@ -422,3 +422,66 @@ describe("owner login", () => {
 		expect(logs).toContain("google_exchange_failed");
 	});
 });
+
+describe("review hardening", () => {
+	it("requires PKCE with S256 at /authorize", async () => {
+		const clientId = await registerClient();
+		const base = {
+			response_type: "code",
+			client_id: clientId,
+			redirect_uri: CLIENT_REDIRECT,
+			state: "client-state",
+			resource: `${BASE}/mcp`,
+		};
+		const { challenge } = await pkcePair();
+		const attempts: Record<string, string>[] = [
+			base,
+			{ ...base, code_challenge: challenge, code_challenge_method: "plain" },
+		];
+		for (const params of attempts) {
+			const res = await SELF.fetch(`${BASE}/authorize?${new URLSearchParams(params)}`, {
+				redirect: "manual",
+			});
+			expect(res.status).toBe(400);
+			expect(res.headers.get("Location")).toBeNull();
+			await res.body?.cancel();
+		}
+		// An unknown client or an unregistered redirect URI is a clean 400 too.
+		const pkce = { code_challenge: challenge, code_challenge_method: "S256" };
+		for (const params of [
+			{ ...base, ...pkce, client_id: "no-such-client" },
+			{ ...base, ...pkce, redirect_uri: "https://attacker.example/cb" },
+		]) {
+			const res = await SELF.fetch(`${BASE}/authorize?${new URLSearchParams(params)}`, {
+				redirect: "manual",
+			});
+			expect(res.status).toBe(400);
+			await res.body?.cancel();
+		}
+		const ok = await SELF.fetch(
+			`${BASE}/authorize?${new URLSearchParams({ ...base, code_challenge: challenge, code_challenge_method: "S256" })}`,
+		);
+		expect(ok.status).toBe(200);
+		await ok.body?.cancel();
+	});
+
+	it("logs OAuth errors as status + code only", async () => {
+		const res = await SELF.fetch(`${BASE}/token`, {
+			method: "POST",
+			headers: { "Content-Type": "application/x-www-form-urlencoded" },
+			body: new URLSearchParams({
+				grant_type: "authorization_code",
+				code: "secret-looking-code-value",
+				client_id: "no-such-client",
+				code_verifier: "secret-looking-verifier",
+			}).toString(),
+		});
+		expect(res.status).toBeGreaterThanOrEqual(400);
+		await res.body?.cancel();
+		const logs = allLogOutput();
+		expect(logs).toMatch(/oauth error: status=\d+ code=[a-z_]+/);
+		expect(logs).not.toContain("OAuth error response");
+		expect(logs).not.toContain("secret-looking");
+		expect(logs).not.toContain("no-such-client");
+	});
+});

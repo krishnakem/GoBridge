@@ -26,14 +26,37 @@ import {
 
 const app = new Hono<{ Bindings: Env & { OAUTH_PROVIDER: OAuthHelpers } }>();
 
+// Unexpected errors: log the route and a category only, never the error itself
+// (its message or stack could contain request data).
+app.onError((_error, c) => {
+	console.error(`${c.req.method} ${c.req.path} error: internal`);
+	return c.text("Internal server error", 500);
+});
+
+/** OAuth 2.1: every MCP client must use PKCE with S256. */
+function hasRequiredPkce(request: AuthRequest): boolean {
+	return Boolean(request.codeChallenge) && request.codeChallengeMethod === "S256";
+}
+
 // Health check: no data, no auth.
 app.get("/health", (c) => c.text("ok"));
 
 app.get("/authorize", async (c) => {
-	const oauthReqInfo = await c.env.OAUTH_PROVIDER.parseAuthRequest(c.req.raw);
+	let oauthReqInfo: AuthRequest;
+	try {
+		oauthReqInfo = await c.env.OAUTH_PROVIDER.parseAuthRequest(c.req.raw);
+	} catch (_e) {
+		// Unknown client, unregistered redirect URI, bad PKCE method, and so on.
+		console.warn("GET /authorize denied: invalid_request");
+		return c.text("Invalid request", 400);
+	}
 	const { clientId } = oauthReqInfo;
 	if (!clientId) {
 		return c.text("Invalid request", 400);
+	}
+	if (!hasRequiredPkce(oauthReqInfo)) {
+		console.warn("GET /authorize denied: pkce_required");
+		return c.text("PKCE with S256 is required", 400);
 	}
 
 	// Check if client is already approved
@@ -84,6 +107,10 @@ app.post("/authorize", async (c) => {
 
 		if (!state.oauthReqInfo || !state.oauthReqInfo.clientId) {
 			return c.text("Invalid request", 400);
+		}
+		if (!hasRequiredPkce(state.oauthReqInfo)) {
+			console.warn("POST /authorize denied: pkce_required");
+			return c.text("PKCE with S256 is required", 400);
 		}
 
 		// Add client to approved list
