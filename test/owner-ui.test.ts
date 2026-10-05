@@ -238,6 +238,29 @@ describe("/settings", () => {
 	});
 });
 
+describe("/audit read filter", () => {
+	it("hides reads by default and shows them, without content, when asked", async () => {
+		mockGoogle();
+		await runReadTool(env, "list_accounts", {}, { clientId: "client-filter-1", clientName: "Filter Client" });
+		const owner = await signIn("/audit");
+
+		const hidden = await (await get("/audit", owner.cookie)).text();
+		expect(hidden).toContain("<h1>Recent writes</h1>");
+		expect(hidden).toContain('<a href="/audit?reads=show">Show reads too</a>');
+		expect(hidden).not.toContain("client-filter-1");
+
+		const shown = await (await get("/audit?reads=show", owner.cookie)).text();
+		expect(shown).toContain("<h1>Recent writes and reads</h1>");
+		expect(shown).toContain('<a href="/audit">Hide reads</a>');
+		expect(shown).toContain("client-filter-1");
+		expect(shown).toContain("Filter Client");
+		expect(shown).toContain('<strong>list_accounts</strong> <span class="badge">read</span>');
+		expect(shown).toMatch(/Items returned: \d+/);
+		// The filter is a link, not a form: nothing to submit and no state change.
+		expect(shown.match(/<form /g)).toHaveLength(2);
+	});
+});
+
 describe("attention dot", () => {
 	it("is hidden when everything is fine and shown when writes are off", async () => {
 		mockGoogle();

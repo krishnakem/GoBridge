@@ -3,6 +3,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { saveAccount } from "../src/accounts";
 import { b64urlEncode } from "../src/crypto";
 import { clearAccessTokenCache } from "../src/google-api";
+import { listAudit } from "../src/guardrails";
 import {
 	LIMITS,
 	READ_TOOLS,
@@ -812,6 +813,18 @@ describe("over /mcp", () => {
 		expect(labels.message.result.isError).toBeFalsy();
 		expect(labels.message.result.content[0].text).toContain("Work");
 
+		// The read is audited under the real MCP client, with a count and nothing else.
+		const audited = (await listAudit(env, 1000, "read")).filter((e) => e.alias === alias);
+		expect(audited).toHaveLength(1);
+		expect(audited[0]).toMatchObject({
+			clientName: "Read Test Client",
+			kind: "read",
+			meta: { resultCount: 1 },
+			outcome: "ok",
+			tool: "list_labels",
+		});
+		expect(audited[0].clientId).not.toBe("unknown");
+
 		// The protocol layer enforces the same zod limits.
 		const tooMany = await rpc(token, session, {
 			id: 4,
@@ -897,5 +910,121 @@ describe("error hints", () => {
 			expect(res.text, `${name} ${status}`).toContain(hint);
 			expect(res.text).not.toContain("raw google detail");
 		}
+	});
+});
+
+describe("read guardrails", () => {
+	const CLIENT = { clientId: "client-read-1", clientName: "Claude" };
+	const readAudit = async (alias: string) =>
+		(await listAudit(env, 1000, "read")).filter((e) => e.alias === alias);
+
+	it("audits each read with a count only: no query, ids, subjects, addresses or content", async () => {
+		const alias = await linked();
+		mockGoogle((url) => {
+			const path = url.pathname;
+			if (path.endsWith("/messages")) return Response.json({ messages: [{ id: "msgSECRETid1" }, { id: "msgSECRETid2" }] });
+			if (path.includes("/messages/")) return Response.json(gmailMessage("msgSECRETid1", "Secret body text"));
+			if (path.endsWith("/events")) return Response.json({ items: [{ id: "evtSECRETid", summary: "Dentist" }] });
+			if (path.endsWith("/export")) return new Response("Doc text");
+			if (path === "/drive/v3/files/fileSECRETid") {
+				return Response.json({ name: "Notes", mimeType: "application/vnd.google-apps.document" });
+			}
+			if (path === "/drive/v3/files") return Response.json({ files: [] });
+		});
+		const run = (name: string, args: Record<string, unknown>) => runReadTool(env, name, args, CLIENT);
+		await run("search_emails", { account: alias, query: "confidential-query from:alice" });
+		await run("read_email", { account: alias, messageId: "msgSECRETid1" });
+		await run("list_events", {
+			account: alias,
+			timeMin: "2026-10-05T00:00:00Z",
+			timeMax: "2026-10-06T00:00:00Z",
+		});
+		await run("search_drive", { account: alias, query: "confidential-query" });
+		await run("read_drive_file", { account: alias, fileId: "fileSECRETid" });
+
+		const entries = await readAudit(alias);
+		expect(entries.map((e) => `${e.tool}:${e.meta.resultCount}`).sort()).toEqual(
+			["list_events:1", "read_drive_file:1", "read_email:1", "search_drive:0", "search_emails:2"].sort(),
+		);
+		for (const entry of entries) {
+			expect(Object.keys(entry).sort()).toEqual(
+				["alias", "clientId", "clientName", "kind", "meta", "outcome", "tool", "ts"].sort(),
+			);
+			expect(entry).toMatchObject({ clientId: "client-read-1", clientName: "Claude", kind: "read", outcome: "ok" });
+			expect(Object.keys(entry.meta)).toEqual(["resultCount"]);
+		}
+
+		// Check the raw stored values too, not only the parsed entries.
+		const keys = (await env.AUDIT_LOG.list({ prefix: "readaudit:" })).keys;
+		const before = Math.floor(Date.now() / 1000);
+		const raw = (await Promise.all(keys.map((k) => env.AUDIT_LOG.get(k.name)))).join("\n");
+		for (const forbidden of [
+			"confidential-query",
+			"from:alice",
+			"SECRETid",
+			"Quarterly plans",
+			"Secret body text",
+			"Snippet of the message",
+			"alice@example.com",
+			"@example.com",
+			"Dentist",
+			"Doc text",
+			"Notes",
+			"2026-10-05T00:00:00Z",
+			"untrusted_content",
+		]) {
+			expect(raw, forbidden).not.toContain(forbidden);
+		}
+		// Same 90-day expiry as write entries.
+		const ninetyDays = 90 * 24 * 60 * 60;
+		for (const key of keys) {
+			expect(key.expiration).toBeGreaterThanOrEqual(before + ninetyDays - 120);
+			expect(key.expiration).toBeLessThanOrEqual(before + ninetyDays + 120);
+		}
+		// Reads never land in the write audit list.
+		expect((await listAudit(env, 1000)).filter((e) => e.alias === alias)).toHaveLength(0);
+	});
+
+	it("records failed reads by category and skips rejected input", async () => {
+		const alias = await linked();
+		mockGoogle(() => new Response('{"error":"raw google detail"}', { status: 404 }));
+		await runReadTool(env, "read_email", { account: alias, messageId: "missingSECRETid" }, CLIENT);
+		await runReadTool(env, "read_email", { account: alias, messageId: "bad id" }, CLIENT);
+		await runReadTool(env, "read_email", { account: alias, messageId: "x" });
+
+		const entries = await readAudit(alias);
+		expect(entries).toHaveLength(2);
+		expect(entries.map((e) => e.outcome)).toEqual(["not_found", "not_found"]);
+		expect(entries.every((e) => Object.keys(e.meta).length === 0)).toBe(true);
+		// A connection without a client id is still recorded, as "unknown".
+		expect(entries.map((e) => e.clientId).sort()).toEqual(["client-read-1", "unknown"]);
+		expect(JSON.stringify(entries)).not.toContain("SECRETid");
+		expect(JSON.stringify(entries)).not.toContain("raw google detail");
+	});
+
+	it("rate-limits reads per account per hour, with a configurable limit", async () => {
+		expect(env.READ_RATE_LIMIT_PER_HOUR).toBe("300");
+		const first = await linked();
+		const second = await linked();
+		const calls = mockGoogle((url) => {
+			if (url.pathname.endsWith("/labels")) return Response.json({ labels: [] });
+		});
+		const limited = { ...env, READ_RATE_LIMIT_PER_HOUR: "3" } as Env;
+		const read = (alias: string) => runReadTool(limited, "list_labels", { account: alias }, CLIENT);
+
+		for (let i = 0; i < 3; i++) expect((await read(first)).isError, `call ${i}`).toBeFalsy();
+		const blocked = await read(first);
+		expect(blocked.isError).toBe(true);
+		expect(blocked.content[0].text).toContain("Rate limit reached: at most 3 read actions");
+		expect(calls.api).toHaveLength(3);
+		// Blocked calls are not audited; the other account has its own allowance.
+		expect(await readAudit(first)).toHaveLength(3);
+		expect((await read(second)).isError).toBeFalsy();
+		// An unparsable setting falls back to the default of 300, so the same account is under it again.
+		const fallback = { ...env, READ_RATE_LIMIT_PER_HOUR: "lots" } as Env;
+		expect((await runReadTool(fallback, "list_labels", { account: first }, CLIENT)).isError).toBeFalsy();
+		// A limit of 0 blocks every read.
+		const none = { ...env, READ_RATE_LIMIT_PER_HOUR: "0" } as Env;
+		expect((await runReadTool(none, "list_labels", { account: second }, CLIENT)).isError).toBe(true);
 	});
 });

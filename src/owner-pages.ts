@@ -17,6 +17,7 @@ import {
 	type AuditEntry,
 	dailySendCap,
 	listAudit,
+	readRateLimit,
 	WRITE_RATE_LIMIT_PER_HOUR,
 	writesEnabled,
 	writeUsage,
@@ -47,6 +48,7 @@ function auditDetails(entry: AuditEntry): string {
 	if (meta.removeLabelIds?.length) parts.push(`Removed: ${meta.removeLabelIds.join(", ")}`);
 	if (meta.messageId) parts.push(`Message id: ${meta.messageId}`);
 	if (meta.draftId) parts.push(`Draft id: ${meta.draftId}`);
+	if (meta.resultCount !== undefined) parts.push(`Items returned: ${meta.resultCount}`);
 	return parts.map(escapeHtml).join("<br>");
 }
 
@@ -54,14 +56,21 @@ app.get("/audit", async (c) => {
 	const session = await readOwnerSession(c.req.raw, c.env);
 	if (!session) return startOwnerLogin(c.req.raw, c.env, "/audit");
 
-	const [entries, { attention }] = await Promise.all([listAudit(c.env, 100), ownerStatus(c.env)]);
+	// A plain GET filter: reads are hidden unless asked for. Nothing changes state.
+	const showReads = c.req.query("reads") === "show";
+	const [writes, reads, { attention }] = await Promise.all([
+		listAudit(c.env, 100, "write"),
+		showReads ? listAudit(c.env, 100, "read") : Promise.resolve([]),
+		ownerStatus(c.env),
+	]);
+	const entries = [...writes, ...reads].sort((a, b) => b.ts.localeCompare(a.ts));
 	const rows = entries
 		.map(
 			(entry) => `<tr>
 <td class="muted">${escapeHtml(entry.ts.replace("T", " ").slice(0, 19))}</td>
 <td>${escapeHtml(entry.clientName || "(no name)")}<br><span class="muted mono small">${escapeHtml(entry.clientId)}</span></td>
-<td>${escapeHtml(entry.alias)}</td>
-<td><strong>${escapeHtml(entry.tool)}</strong><br><span class="muted">${escapeHtml(entry.outcome === "ok" ? "done" : `failed: ${entry.outcome}`)}</span></td>
+<td>${escapeHtml(entry.alias || "(all)")}</td>
+<td><strong>${escapeHtml(entry.tool)}</strong> <span class="badge">${entry.kind === "read" ? "read" : "write"}</span><br><span class="muted">${escapeHtml(entry.outcome === "ok" ? "done" : `failed: ${entry.outcome}`)}</span></td>
 <td>${auditDetails(entry)}</td>
 </tr>`,
 		)
@@ -71,15 +80,19 @@ app.get("/audit", async (c) => {
 <tr><th>Time (UTC)</th><th>AI client</th><th>Account</th><th>Action</th><th>Details</th></tr>
 ${rows}
 </table></div>`
-		: `<p class="muted">No writes recorded yet.</p>`;
+		: `<p class="muted">Nothing recorded yet.</p>`;
+	const filter = showReads
+		? '<p>Showing writes and reads. <a href="/audit">Hide reads</a></p>'
+		: '<p>Showing writes only. <a href="/audit?reads=show">Show reads too</a></p>';
 
 	return renderOwnerPage({
 		active: "/audit",
 		attention,
-		bodyHtml: `<p class="muted">The 100 most recent write actions. Entries are kept for 90 days and never contain message or event bodies.</p>
+		bodyHtml: `<p class="muted">The 100 most recent write actions${showReads ? " and the 100 most recent reads" : ""}. Entries are kept for 90 days. Writes record recipients and subject or event name, never bodies. Reads record only the tool and how many items came back.</p>
+${filter}
 ${table}`,
 		session,
-		title: "Recent writes",
+		title: showReads ? "Recent writes and reads" : "Recent writes",
 	});
 });
 
@@ -222,6 +235,7 @@ app.get("/settings", async (c) => {
 <td><strong>${escapeHtml(account.alias)}</strong><br><span class="muted small">${escapeHtml(account.email)}</span></td>
 <td>${usage[i].sendsToday} of ${cap}</td>
 <td>${usage[i].writesThisHour} of ${WRITE_RATE_LIMIT_PER_HOUR}</td>
+<td>${usage[i].readsThisHour} of ${readRateLimit(c.env)}</td>
 <td>${
 				attention.relink.includes(account.alias)
 					? '<span class="badge badge-alert">Needs re-link</span>'
@@ -232,7 +246,7 @@ app.get("/settings", async (c) => {
 		.join("\n");
 	const table = accounts.length
 		? `<div class="table-wrap"><table>
-<tr><th>Account</th><th>Emails sent today (UTC)</th><th>Writes this hour</th><th>Status</th></tr>
+<tr><th>Account</th><th>Emails sent today (UTC)</th><th>Writes this hour</th><th>Reads this hour</th><th>Status</th></tr>
 ${rows}
 </table></div>`
 		: `<p class="muted">No accounts linked yet.</p>`;
@@ -256,6 +270,7 @@ ${rows}
 <dt>Write tools (WRITES_ENABLED)</dt><dd>${enabled ? '<span class="badge badge-ok">On</span>' : '<span class="badge badge-alert">Off</span>'}</dd>
 <dt>Daily send cap</dt><dd>${cap} emails per account per day</dd>
 <dt>Write rate limit</dt><dd>${WRITE_RATE_LIMIT_PER_HOUR} write actions per account per hour</dd>
+<dt>Read rate limit</dt><dd>${readRateLimit(c.env)} read actions per account per hour</dd>
 <dt>Owner session lifetime</dt><dd>${SESSION_TTL_SECONDS / 3600} hours, then you sign in again</dd>
 <dt>Linked accounts</dt><dd>${accounts.length}${attention.relink.length ? `, ${attention.relink.length} needing re-link` : ""}</dd>
 </dl>
