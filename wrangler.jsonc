@@ -55,9 +55,9 @@
 				"bindings": [{ "class_name": "GoBridgeMCP", "name": "MCP_OBJECT" }]
 			},
 			"kv_namespaces": [
-				{ "binding": "OAUTH_KV", "id": "REPLACE_WITH_DEV_OAUTH_KV_ID" },
-				{ "binding": "GOOGLE_TOKENS", "id": "REPLACE_WITH_DEV_GOOGLE_TOKENS_ID" },
-				{ "binding": "AUDIT_LOG", "id": "REPLACE_WITH_DEV_AUDIT_LOG_ID" }
+				{ "binding": "OAUTH_KV", "id": "ff78f65975ba4390bb54ae3ea18c7977" },
+				{ "binding": "GOOGLE_TOKENS", "id": "b17315b18c484813b41fe84d4f8528a4" },
+				{ "binding": "AUDIT_LOG", "id": "459ab29d5e92430bb55fcf1d60c40723" }
 			]
 		},
 		"production": {
