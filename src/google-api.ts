@@ -6,7 +6,7 @@
  * they are not returned to tools, not logged, and not put in error messages.
  * Google's raw responses and error bodies are never surfaced either.
  */
-import { getAccount, getRefreshToken } from "./accounts";
+import { getAccount, getRefreshToken, markNeedsRelink } from "./accounts";
 
 const GOOGLE_TOKEN_URL = "https://oauth2.googleapis.com/token";
 
@@ -41,6 +41,16 @@ const relinkError = (alias: string) =>
 		`Google access for "${alias}" has expired or was revoked. Ask the owner to re-link this account at /link.`,
 	);
 
+/** Flags the account for the owner pages, then returns the error to throw. */
+async function needsRelink(env: Env, alias: string): Promise<ToolError> {
+	try {
+		await markNeedsRelink(env, alias);
+	} catch (_e) {
+		// The flag is a convenience; the error below is what matters.
+	}
+	return relinkError(alias);
+}
+
 // Short-lived access tokens, kept in memory only (never in KV). Keyed by alias
 // and bound to the stored record, so unlinking or re-linking drops the entry.
 const accessTokens = new Map<string, { linkedAt: string; token: string; expiresAt: number }>();
@@ -65,7 +75,7 @@ async function getAccessToken(env: Env, alias: string): Promise<string> {
 	} catch (_e) {
 		refreshToken = null; // undecryptable record (e.g. the encryption key changed)
 	}
-	if (!refreshToken) throw relinkError(alias);
+	if (!refreshToken) throw await needsRelink(env, alias);
 
 	let resp: Response;
 	try {
@@ -85,7 +95,7 @@ async function getAccessToken(env: Env, alias: string): Promise<string> {
 	if (!resp.ok) {
 		// 400/401 here means the refresh token itself is no longer accepted.
 		await resp.body?.cancel();
-		if (resp.status === 400 || resp.status === 401) throw relinkError(alias);
+		if (resp.status === 400 || resp.status === 401) throw await needsRelink(env, alias);
 		throw new ToolError("google_error", "Google sign-in is unavailable. Try again in a moment.");
 	}
 	const tokens = (await resp.json().catch(() => null)) as Record<string, unknown> | null;
@@ -109,6 +119,8 @@ export type GoogleRequestOptions = {
 	headers?: Record<string, string>;
 	/** Sent as a JSON body. */
 	json?: unknown;
+	/** The input most likely at fault if Google answers "not found" or "bad request", e.g. "message id". */
+	what?: string;
 };
 
 /**
@@ -142,16 +154,26 @@ export async function googleRequest(
 	switch (resp.status) {
 		case 401:
 			accessTokens.delete(alias);
-			throw relinkError(alias);
+			throw await needsRelink(env, alias);
 		case 403:
 			throw new ToolError("google_denied", "Google refused this request for this account.");
 		case 404:
 		case 410:
-			throw new ToolError("not_found", "Google could not find that item in this account.");
+			throw new ToolError(
+				"not_found",
+				options.what
+					? `Not found: the ${options.what} does not match anything in this account. Check it and try again.`
+					: "Google could not find that item in this account.",
+			);
 		case 429:
 			throw new ToolError("google_rate_limited", "Google is rate-limiting requests. Try again shortly.");
 		case 400:
-			throw new ToolError("invalid_input", "Google rejected the request. Check the ids and query.");
+			throw new ToolError(
+				"invalid_input",
+				options.what
+					? `Google rejected the request: the ${options.what} is probably wrong or malformed.`
+					: "Google rejected the request. Check the ids and query.",
+			);
 		default:
 			throw new ToolError("google_error", "Google returned an error. Try again in a moment.");
 	}
@@ -162,12 +184,18 @@ export function googleGet(
 	alias: string,
 	url: URL | string,
 	headers: Record<string, string> = {},
+	what?: string,
 ): Promise<Response> {
-	return googleRequest(env, alias, url, { headers });
+	return googleRequest(env, alias, url, { headers, what });
 }
 
-export async function googleGetJson<T>(env: Env, alias: string, url: URL | string): Promise<T> {
-	return googleJson<T>(env, alias, url);
+export async function googleGetJson<T>(
+	env: Env,
+	alias: string,
+	url: URL | string,
+	what?: string,
+): Promise<T> {
+	return googleJson<T>(env, alias, url, { what });
 }
 
 /** Like googleRequest, but parses a JSON response (an empty body gives `{}`). */

@@ -5,6 +5,7 @@ import { renderMessagePage } from "./html";
 import { LinkHandler } from "./link-handler";
 import { OwnerPages } from "./owner-pages";
 import { finishOwnerLogin, OWNER_LOGIN_STATE_PREFIX } from "./session";
+import { StaticAssets } from "./static-assets";
 import {
 	fetchGoogleIdentityClaims,
 	getUpstreamAuthorizeUrl,
@@ -223,8 +224,11 @@ app.get("/callback", async (c) => {
 	return new Response(null, { status: 302, headers });
 });
 
-// Owner-only pages: /link, /link/callback, /link/unlink, /audit, /clients, /clients/revoke
+// Owner-only pages: /link, /link/callback, /link/unlink, /audit, /clients,
+// /clients/revoke, /settings, /logout (plus the public /signed-out notice)
 app.route("/", LinkHandler);
 app.route("/", OwnerPages);
+// Public, data-free CSS and JS for the pages above: /static/app.css, /static/menu.js
+app.route("/", StaticAssets);
 
 export { app as GoogleHandler };

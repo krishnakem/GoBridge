@@ -25,7 +25,8 @@ import {
 	LINK_SCOPES,
 	revokeGoogleToken,
 } from "./google";
-import { escapeHtml, ownerNav, renderMessagePage, renderPage } from "./html";
+import { type Attention, escapeHtml, renderMessagePage, renderOwnerPage } from "./html";
+import { ownerStatus } from "./owner-status";
 import { hasValidCsrf, type OwnerSession, readOwnerSession, startOwnerLogin } from "./session";
 
 const LINK_STATE_TTL_SECONDS = 600;
@@ -77,7 +78,12 @@ export async function requireOwnerPost(
 	return { form, session };
 }
 
-function renderLinkPage(session: OwnerSession, accounts: AccountInfo[], notice?: string) {
+function renderLinkPage(
+	session: OwnerSession,
+	accounts: AccountInfo[],
+	attention: Attention,
+	notice?: string,
+) {
 	const csrf = escapeHtml(session.csrf);
 	const note = notice && NOTICES[notice];
 	const noteHtml = note
@@ -89,39 +95,48 @@ function renderLinkPage(session: OwnerSession, accounts: AccountInfo[], notice?:
 			(account) => `<tr>
 <td><strong>${escapeHtml(account.alias)}</strong></td>
 <td>${escapeHtml(account.email)}</td>
+<td>${
+				attention.relink.includes(account.alias)
+					? '<span class="badge badge-alert">Needs re-link</span>'
+					: '<span class="badge badge-ok">Linked</span>'
+			}</td>
 <td class="muted">${escapeHtml(account.linkedAt.slice(0, 10))}</td>
 <td><form class="inline" method="post" action="/link/unlink">
 <input type="hidden" name="csrf_token" value="${csrf}">
 <input type="hidden" name="alias" value="${escapeHtml(account.alias)}">
-<button type="submit">Unlink</button>
+<button class="btn-danger" type="submit">Unlink</button>
 </form></td>
 </tr>`,
 		)
 		.join("\n");
 
 	const table = accounts.length
-		? `<table>
-<tr><th>Alias</th><th>Google account</th><th>Linked</th><th></th></tr>
+		? `<div class="table-wrap"><table>
+<tr><th>Alias</th><th>Google account</th><th>Status</th><th>Linked</th><th></th></tr>
 ${rows}
-</table>`
+</table></div>`
 		: `<p class="muted">No accounts linked yet.</p>`;
+	const relinkHelp = attention.relink.length
+		? `<p class="warn">Google no longer accepts GoBridge's access for: ${escapeHtml(attention.relink.join(", "))}. Unlink each one, then link it again with the same alias.</p>`
+		: "";
 
-	return renderPage(
-		"Linked accounts",
-		`${noteHtml}
-<h2>Linked Google accounts</h2>
+	return renderOwnerPage({
+		active: "/link",
+		attention,
+		bodyHtml: `${noteHtml}${relinkHelp}
 ${table}
 <h2>Link a Google account</h2>
 <p>Pick a short alias (for example <code>personal</code>). AI clients use it to say which account to act on.</p>
-<form method="post" action="/link">
+<form class="field" method="post" action="/link">
 <input type="hidden" name="csrf_token" value="${csrf}">
-<label>Alias <input type="text" name="alias" required maxlength="32" pattern="[a-z0-9]([a-z0-9-]{0,30}[a-z0-9])?" autocomplete="off"></label>
-<button type="submit">Continue to Google</button>
+<label for="alias">Alias</label>
+<input id="alias" type="text" name="alias" required maxlength="32" pattern="[a-z0-9]([a-z0-9-]{0,30}[a-z0-9])?" autocomplete="off">
+<button class="btn-primary" type="submit">Continue to Google</button>
 </form>
-<p class="muted">Lowercase letters, numbers and hyphens only. On Google's screen, leave every permission ticked: GoBridge refuses a partial grant.</p>
-<p class="muted">Signed in as ${escapeHtml(session.email)}.</p>
-${ownerNav(session.csrf)}`,
-	);
+<p class="muted small">Lowercase letters, numbers and hyphens only. On Google's screen, leave every permission ticked: GoBridge refuses a partial grant.</p>`,
+		session,
+		title: "Linked accounts",
+	});
 }
 
 const app = new Hono<{ Bindings: Env }>();
@@ -132,7 +147,8 @@ app.get("/link", async (c) => {
 		// No content without a session: straight to owner sign-in.
 		return startOwnerLogin(c.req.raw, c.env, "/link");
 	}
-	return renderLinkPage(session, await listAccounts(c.env), c.req.query("msg"));
+	const { accounts, attention } = await ownerStatus(c.env);
+	return renderLinkPage(session, accounts, attention, c.req.query("msg"));
 });
 
 app.post("/link", async (c) => {
