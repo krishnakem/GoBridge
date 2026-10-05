@@ -1,0 +1,30 @@
+{
+	"name": "gobridge",
+	"version": "0.0.1",
+	"private": true,
+	"type": "module",
+	"scripts": {
+		"dev": "wrangler dev --env dev",
+		"cf-typegen": "wrangler types --env dev --strict-vars false",
+		"typecheck": "tsc --noEmit",
+		"test": "vitest run",
+		"predeploy": "npm run typecheck && npm run test",
+		"deploy:dev": "npm run predeploy && wrangler deploy --env dev",
+		"deploy:prod": "npm run predeploy && wrangler deploy --env production",
+		"hooks:install": "git config core.hooksPath .githooks"
+	},
+	"dependencies": {
+		"@cloudflare/workers-oauth-provider": "^1.2.1",
+		"@modelcontextprotocol/sdk": "^1.30.0",
+		"agents": "^0.26.0",
+		"hono": "^4.13.13",
+		"zod": "^4.6.5"
+	},
+	"devDependencies": {
+		"@cloudflare/vitest-pool-workers": "^0.22.0",
+		"@types/node": "^26.6.4",
+		"typescript": "^7.0.2",
+		"vitest": "^4.1.11",
+		"wrangler": "^4.147.0"
+	}
+}

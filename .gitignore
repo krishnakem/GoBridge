@@ -1,0 +1,23 @@
+SPEC.md
+
+# Secrets — never commit
+.dev.vars
+.dev.vars.*
+.env
+.env.*
+
+# Google / service credential JSON files
+client_secret*.json
+credentials*.json
+service-account*.json
+*-credentials.json
+*.keys.json
+
+# Wrangler / build output
+.wrangler/
+node_modules/
+dist/
+
+# OS / editor
+.DS_Store
+*.log
