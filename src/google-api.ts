@@ -19,6 +19,10 @@ export type ToolErrorCategory =
 	| "google_rate_limited"
 	| "google_error"
 	| "unsupported_file"
+	| "writes_disabled"
+	| "rate_limited"
+	| "send_cap_reached"
+	| "client_unknown"
 	| "internal";
 
 /** An error whose message is safe to show to the MCP client as-is. */
@@ -100,20 +104,35 @@ async function getAccessToken(env: Env, alias: string): Promise<string> {
 	return token;
 }
 
+export type GoogleRequestOptions = {
+	method?: "GET" | "POST" | "PUT" | "PATCH" | "DELETE";
+	headers?: Record<string, string>;
+	/** Sent as a JSON body. */
+	json?: unknown;
+};
+
 /**
- * GETs a Google API URL as the linked account. Returns the successful response;
+ * Calls a Google API URL as the linked account. Returns the successful response;
  * every failure becomes a ToolError with a generic, safe message.
  */
-export async function googleGet(
+export async function googleRequest(
 	env: Env,
 	alias: string,
 	url: URL | string,
-	headers: Record<string, string> = {},
+	options: GoogleRequestOptions = {},
 ): Promise<Response> {
 	const token = await getAccessToken(env, alias);
 	let resp: Response;
 	try {
-		resp = await fetch(url, { headers: { ...headers, Authorization: `Bearer ${token}` } });
+		resp = await fetch(url, {
+			body: options.json === undefined ? undefined : JSON.stringify(options.json),
+			headers: {
+				...options.headers,
+				...(options.json === undefined ? {} : { "Content-Type": "application/json" }),
+				Authorization: `Bearer ${token}`,
+			},
+			method: options.method ?? "GET",
+		});
 	} catch (_e) {
 		throw new ToolError("google_error", "Could not reach Google. Try again in a moment.");
 	}
@@ -138,8 +157,28 @@ export async function googleGet(
 	}
 }
 
+export function googleGet(
+	env: Env,
+	alias: string,
+	url: URL | string,
+	headers: Record<string, string> = {},
+): Promise<Response> {
+	return googleRequest(env, alias, url, { headers });
+}
+
 export async function googleGetJson<T>(env: Env, alias: string, url: URL | string): Promise<T> {
-	const resp = await googleGet(env, alias, url);
+	return googleJson<T>(env, alias, url);
+}
+
+/** Like googleRequest, but parses a JSON response (an empty body gives `{}`). */
+export async function googleJson<T>(
+	env: Env,
+	alias: string,
+	url: URL | string,
+	options: GoogleRequestOptions = {},
+): Promise<T> {
+	const resp = await googleRequest(env, alias, url, options);
+	if (resp.status === 204) return {} as T;
 	try {
 		return (await resp.json()) as T;
 	} catch (_e) {
