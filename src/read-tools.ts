@@ -7,7 +7,7 @@
  */
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { z } from "zod";
-import { ALIAS_PATTERN, listAccounts } from "./accounts";
+import { ALIAS_PATTERN, getAccount, listAccounts } from "./accounts";
 import { b64urlDecode } from "./crypto";
 import { googleGet, googleGetJson, readTextCapped, ToolError } from "./google-api";
 import { enforceReadRateLimit, recordReadAudit } from "./guardrails";
@@ -590,7 +590,21 @@ export async function runReadTool(
 	let outcome = "ok";
 	let resultCount: number | undefined;
 	let response: ToolResult;
+	const clientId = client?.clientId;
 	try {
+		if (!clientId) {
+			// Every read must be attributable to a client in the audit log.
+			throw new ToolError(
+				"client_unknown",
+				"This connection has no client identity. Disconnect and reconnect GoBridge in your AI client, then try again.",
+			);
+		}
+		if (account && !(await getAccount(env, account))) {
+			throw new ToolError(
+				"unknown_alias",
+				`No linked account has the alias "${account}". Use list_accounts to see the linked accounts.`,
+			);
+		}
 		await enforceReadRateLimit(env, account);
 		reachedTool = true;
 		const result = await definition.run(env, parsed.data);
@@ -609,11 +623,11 @@ export async function runReadTool(
 	}
 
 	// Minimal audit entry: never the query, ids, subjects or content.
-	if (reachedTool) {
+	if (reachedTool && clientId) {
 		try {
 			await recordReadAudit(env, {
 				alias: account,
-				clientId: client?.clientId ?? "unknown",
+				clientId,
 				clientName: client?.clientName ?? "",
 				outcome,
 				resultCount,

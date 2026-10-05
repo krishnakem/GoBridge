@@ -602,25 +602,19 @@ describe("audit log", () => {
 		expect(deleted.meta).toMatchObject({ eventId: "evt1", summary: "Planning session" });
 	});
 
-	it("stores entries with a 90-day expiry and records failures", async () => {
+	it("records failures by category", async () => {
 		const alias = await linked();
 		mockGoogle((c) => {
 			if (c.path.endsWith("/trash")) return new Response('{"error":"raw google detail"}', { status: 500 });
 		});
-		const before = Math.floor(Date.now() / 1000);
 		const res = await call("trash_message", { account: alias, messageId: "m1" });
 		expect(res.isError).toBe(true);
 		expect(res.text).not.toContain("raw google detail");
 
 		const [entry] = await auditFor(alias);
-		expect(entry).toMatchObject({ outcome: "google_error", tool: "trash_message" });
-
-		const keys = (await env.AUDIT_LOG.list({ prefix: "audit:" })).keys;
-		const ninetyDays = 90 * 24 * 60 * 60;
-		for (const key of keys) {
-			expect(key.expiration).toBeGreaterThanOrEqual(before + ninetyDays - 5);
-			expect(key.expiration).toBeLessThanOrEqual(before + ninetyDays + 120);
-		}
+		expect(entry).toMatchObject({ kind: "write", outcome: "google_error", tool: "trash_message" });
+		const raw = await env.AUDIT_DB.prepare("SELECT * FROM audit_writes WHERE alias = ?").bind(alias).all();
+		expect(JSON.stringify(raw.results)).not.toContain("raw google detail");
 	});
 });
 

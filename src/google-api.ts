@@ -23,6 +23,7 @@ export type ToolErrorCategory =
 	| "rate_limited"
 	| "send_cap_reached"
 	| "client_unknown"
+	| "counter_unavailable"
 	| "internal";
 
 /** An error whose message is safe to show to the MCP client as-is. */

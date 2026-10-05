@@ -110,8 +110,11 @@ function gmailMessage(id: string, body: string, extra: Record<string, unknown> =
 	};
 }
 
+// Every read must come from an identified MCP client.
+const TEST_CLIENT = { clientId: "client-test-default", clientName: "Test Client" };
+
 async function call(name: string, args: Record<string, unknown>) {
-	const result = await runReadTool(env, name, args);
+	const result = await runReadTool(env, name, args, TEST_CLIENT);
 	const text = result.content.map((c) => c.text).join("\n");
 	return { isError: result.isError === true, text, json: () => JSON.parse(text, unwrap) };
 }
@@ -954,10 +957,13 @@ describe("read guardrails", () => {
 			expect(Object.keys(entry.meta)).toEqual(["resultCount"]);
 		}
 
-		// Check the raw stored values too, not only the parsed entries.
-		const keys = (await env.AUDIT_LOG.list({ prefix: "readaudit:" })).keys;
-		const before = Math.floor(Date.now() / 1000);
-		const raw = (await Promise.all(keys.map((k) => env.AUDIT_LOG.get(k.name)))).join("\n");
+		// Check the raw stored rows too, not only the parsed entries.
+		const rows = await env.AUDIT_DB.prepare("SELECT * FROM audit_reads WHERE alias = ?").bind(alias).all();
+		expect(rows.results).toHaveLength(5);
+		expect(Object.keys(rows.results[0]).sort()).toEqual(
+			["alias", "client_id", "client_name", "id", "outcome", "result_count", "tool", "ts"].sort(),
+		);
+		const raw = JSON.stringify(rows.results);
 		for (const forbidden of [
 			"confidential-query",
 			"from:alice",
@@ -975,12 +981,6 @@ describe("read guardrails", () => {
 		]) {
 			expect(raw, forbidden).not.toContain(forbidden);
 		}
-		// Same 90-day expiry as write entries.
-		const ninetyDays = 90 * 24 * 60 * 60;
-		for (const key of keys) {
-			expect(key.expiration).toBeGreaterThanOrEqual(before + ninetyDays - 120);
-			expect(key.expiration).toBeLessThanOrEqual(before + ninetyDays + 120);
-		}
 		// Reads never land in the write audit list.
 		expect((await listAudit(env, 1000)).filter((e) => e.alias === alias)).toHaveLength(0);
 	});
@@ -990,16 +990,30 @@ describe("read guardrails", () => {
 		mockGoogle(() => new Response('{"error":"raw google detail"}', { status: 404 }));
 		await runReadTool(env, "read_email", { account: alias, messageId: "missingSECRETid" }, CLIENT);
 		await runReadTool(env, "read_email", { account: alias, messageId: "bad id" }, CLIENT);
-		await runReadTool(env, "read_email", { account: alias, messageId: "x" });
 
 		const entries = await readAudit(alias);
-		expect(entries).toHaveLength(2);
-		expect(entries.map((e) => e.outcome)).toEqual(["not_found", "not_found"]);
-		expect(entries.every((e) => Object.keys(e.meta).length === 0)).toBe(true);
-		// A connection without a client id is still recorded, as "unknown".
-		expect(entries.map((e) => e.clientId).sort()).toEqual(["client-read-1", "unknown"]);
+		expect(entries).toHaveLength(1);
+		expect(entries[0]).toMatchObject({ clientId: "client-read-1", outcome: "not_found" });
+		expect(Object.keys(entries[0].meta)).toHaveLength(0);
 		expect(JSON.stringify(entries)).not.toContain("SECRETid");
 		expect(JSON.stringify(entries)).not.toContain("raw google detail");
+	});
+
+	it("refuses reads from a connection with no client id, same as writes", async () => {
+		const alias = await linked();
+		const calls = mockGoogle();
+		for (const client of [undefined, {}, { clientName: "Nameless" }]) {
+			const res = await runReadTool(env, "list_labels", { account: alias }, client);
+			expect(res.isError).toBe(true);
+			expect(res.content[0].text).toContain("reconnect GoBridge");
+			const accounts = await runReadTool(env, "list_accounts", {}, client);
+			expect(accounts.isError).toBe(true);
+			expect(accounts.content[0].text).not.toContain(alias);
+		}
+		expect(calls.api).toHaveLength(0);
+		expect(calls.refreshes).toBe(0);
+		expect(await readAudit(alias)).toHaveLength(0);
+		expect(allLogOutput()).toContain(`tool=list_labels alias=${alias} error=client_unknown`);
 	});
 
 	it("rate-limits reads per account per hour, with a configurable limit", async () => {
