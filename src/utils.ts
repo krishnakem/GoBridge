@@ -45,6 +45,10 @@ export function getUpstreamAuthorizeUrl({
 // Never put Google tokens here: MCP grants and Google access stay separate.
 export type Props = {
 	email: string;
+	/** The MCP client this grant was issued to. Used for the audit log only. */
+	clientId?: string;
+	/** Name the client registered with (self-declared; display only). */
+	clientName?: string;
 };
 
 const GOOGLE_TOKEN_URL = "https://oauth2.googleapis.com/token";

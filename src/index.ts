@@ -5,6 +5,7 @@ import { isAllowedEmail } from "./auth";
 import { GoogleHandler } from "./google-handler";
 import { registerReadTools } from "./read-tools";
 import type { Props } from "./utils";
+import { registerWriteTools } from "./write-tools";
 
 export class GoBridgeMCP extends McpAgent<Env, Record<string, never>, Props> {
 	server = new McpServer({
@@ -13,8 +14,8 @@ export class GoBridgeMCP extends McpAgent<Env, Record<string, never>, Props> {
 	});
 
 	async init() {
-		// Read tools only. Write tools arrive in step 5.
 		registerReadTools(this.server, this.env);
+		registerWriteTools(this.server, this.env, () => this.props);
 	}
 }
 
