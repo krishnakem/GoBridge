@@ -1,0 +1,89 @@
+/**
+ * GoBridge Wrangler configuration.
+ * https://developers.cloudflare.com/workers/wrangler/configuration/
+ *
+ * Two environments, each with its OWN KV namespaces and secrets:
+ *   dev        -> worker "gobridge-dev"  (npm run deploy:dev)
+ *   production -> worker "gobridge"      (owner only: npm run deploy:prod)
+ *
+ * No secrets belong in this file. Secrets are set with `wrangler secret put`
+ * (deployed) or `.dev.vars` (local, gitignored):
+ *   GOOGLE_CLIENT_ID, GOOGLE_CLIENT_SECRET, ALLOWED_EMAIL,
+ *   COOKIE_ENCRYPTION_KEY, TOKEN_ENCRYPTION_KEY
+ *
+ * The top-level name is the dev worker on purpose: a deploy run without
+ * `--env` can never touch production.
+ */
+{
+	"$schema": "node_modules/wrangler/config-schema.json",
+	"name": "gobridge-dev",
+	"main": "src/index.ts",
+	"compatibility_date": "2026-08-22",
+	"compatibility_flags": ["nodejs_compat"],
+	"workers_dev": true,
+	"preview_urls": false,
+	"observability": {
+		"enabled": true
+	},
+	"dev": {
+		"port": 8788
+	},
+	"migrations": [
+		{
+			"new_sqlite_classes": ["GoBridgeMCP"],
+			"tag": "v1"
+		}
+	],
+	"env": {
+		"dev": {
+			"name": "gobridge-dev",
+			"vars": {
+				"BASE_URL": "https://gobridge-dev.krishnakem.workers.dev",
+				"WRITES_ENABLED": "true",
+				"DAILY_SEND_CAP": "25"
+			},
+			"secrets": {
+				"required": [
+					"GOOGLE_CLIENT_ID",
+					"GOOGLE_CLIENT_SECRET",
+					"ALLOWED_EMAIL",
+					"COOKIE_ENCRYPTION_KEY",
+					"TOKEN_ENCRYPTION_KEY"
+				]
+			},
+			"durable_objects": {
+				"bindings": [{ "class_name": "GoBridgeMCP", "name": "MCP_OBJECT" }]
+			},
+			"kv_namespaces": [
+				{ "binding": "OAUTH_KV", "id": "REPLACE_WITH_DEV_OAUTH_KV_ID" },
+				{ "binding": "GOOGLE_TOKENS", "id": "REPLACE_WITH_DEV_GOOGLE_TOKENS_ID" },
+				{ "binding": "AUDIT_LOG", "id": "REPLACE_WITH_DEV_AUDIT_LOG_ID" }
+			]
+		},
+		"production": {
+			"name": "gobridge",
+			"vars": {
+				"BASE_URL": "https://gobridge.krishnakem.workers.dev",
+				"WRITES_ENABLED": "true",
+				"DAILY_SEND_CAP": "25"
+			},
+			"secrets": {
+				"required": [
+					"GOOGLE_CLIENT_ID",
+					"GOOGLE_CLIENT_SECRET",
+					"ALLOWED_EMAIL",
+					"COOKIE_ENCRYPTION_KEY",
+					"TOKEN_ENCRYPTION_KEY"
+				]
+			},
+			"durable_objects": {
+				"bindings": [{ "class_name": "GoBridgeMCP", "name": "MCP_OBJECT" }]
+			},
+			"kv_namespaces": [
+				{ "binding": "OAUTH_KV", "id": "REPLACE_WITH_PROD_OAUTH_KV_ID" },
+				{ "binding": "GOOGLE_TOKENS", "id": "REPLACE_WITH_PROD_GOOGLE_TOKENS_ID" },
+				{ "binding": "AUDIT_LOG", "id": "REPLACE_WITH_PROD_AUDIT_LOG_ID" }
+			]
+		}
+	}
+}

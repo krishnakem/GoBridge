@@ -1,0 +1,26 @@
+import { cloudflareTest } from "@cloudflare/vitest-pool-workers";
+import { defineConfig } from "vitest/config";
+
+export default defineConfig({
+	plugins: [
+		cloudflareTest({
+			wrangler: { configPath: "./wrangler.jsonc", environment: "dev" },
+			miniflare: {
+				// Fake values for tests only. These override anything from local config.
+				bindings: {
+					BASE_URL: "https://gobridge.test",
+					WRITES_ENABLED: "true",
+					DAILY_SEND_CAP: "25",
+					GOOGLE_CLIENT_ID: "test-google-client-id",
+					GOOGLE_CLIENT_SECRET: "test-google-client-secret",
+					ALLOWED_EMAIL: "owner@example.com",
+					COOKIE_ENCRYPTION_KEY: "test-cookie-key",
+					TOKEN_ENCRYPTION_KEY: "test-token-key",
+				},
+			},
+		}),
+	],
+	test: {
+		include: ["test/**/*.test.ts"],
+	},
+});

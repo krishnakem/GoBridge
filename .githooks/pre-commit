@@ -1,0 +1,17 @@
+#!/bin/sh
+# GoBridge pre-commit hook: scan staged changes for secrets with gitleaks.
+# Fails closed: if gitleaks is missing, the commit is blocked.
+# Install: brew install gitleaks     Activate: npm run hooks:install
+
+if git diff --cached --name-only | grep -E '(^|/)\.dev\.vars' >/dev/null; then
+	echo "pre-commit: refusing to commit a .dev.vars file (it holds secrets)." >&2
+	exit 1
+fi
+
+if ! command -v gitleaks >/dev/null 2>&1; then
+	echo "pre-commit: gitleaks is not installed, so the commit is blocked." >&2
+	echo "Install it with: brew install gitleaks" >&2
+	exit 1
+fi
+
+exec gitleaks git --pre-commit --staged --redact --no-banner
