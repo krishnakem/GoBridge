@@ -223,6 +223,8 @@ const DRIVE_EXPORTS: Record<string, string> = {
 	"application/vnd.google-apps.spreadsheet": "text/csv",
 };
 
+const DRIVE_FOLDER = "application/vnd.google-apps.folder";
+
 const isPlainText = (mimeType: string) =>
 	mimeType.startsWith("text/") || mimeType === "application/json";
 
@@ -416,24 +418,42 @@ export const READ_TOOLS: ReadTool[] = [
 
 	tool({
 		name: "search_drive",
-		title: "Search Google Drive",
-		description: `Searches Google Drive (read-only) for files whose name or content matches the words in \`query\`. Returns id, name, mimeType, modifiedTime and webViewLink. ${UNTRUSTED}`,
+		title: "Search or browse Google Drive",
+		description: `Finds files in Google Drive (read-only). Give \`query\` to match words in file names and contents, \`folderId\` to list what is directly inside a folder, or both to search within that folder. Set \`type\` to "folder" to find a folder by name, then pass its id as \`folderId\`. Returns id, name, mimeType, modifiedTime and webViewLink. ${UNTRUSTED}`,
 		schema: z.object({
 			account,
-			query: query.describe("Words to look for in file names and contents"),
+			query: query.optional().describe("Words to look for (file names and contents; names only for folders)"),
+			folderId: googleId("Drive folder id; use \"root\" for the top of My Drive").optional(),
+			type: z
+				.enum(["any", "folder"])
+				.default("any")
+				.describe('"folder" returns only folders, matched by name'),
 			maxResults: z.number().int().min(1).max(LIMITS.driveResults).default(10),
 		}),
 		run: async (env, args) => {
-			const escaped = args.query.replace(/\\/g, "\\\\").replace(/'/g, "\\'");
+			if (!args.query && !args.folderId) {
+				throw new ToolError("invalid_input", "Invalid input: give a query, a folderId, or both.");
+			}
+			const clauses = ["trashed = false"];
+			if (args.query) {
+				const escaped = args.query.replace(/\\/g, "\\\\").replace(/'/g, "\\'");
+				clauses.unshift(`${args.type === "folder" ? "name" : "fullText"} contains '${escaped}'`);
+			}
+			if (args.folderId) clauses.push(`'${args.folderId}' in parents`);
+			if (args.type === "folder") clauses.push(`mimeType = '${DRIVE_FOLDER}'`);
 			const url = new URL(DRIVE);
-			url.searchParams.set("q", `fullText contains '${escaped}' and trashed = false`);
+			url.searchParams.set("q", clauses.join(" and "));
 			url.searchParams.set("pageSize", String(args.maxResults));
-			url.searchParams.set("fields", "files(id,name,mimeType,modifiedTime,webViewLink)");
-			const data = await googleGetJson<{ files?: Record<string, unknown>[] }>(
-				env,
-				args.account,
-				url,
+			url.searchParams.set(
+				"fields",
+				"nextPageToken,files(id,name,mimeType,modifiedTime,webViewLink)",
 			);
+			// Google does not allow sorting together with a fullText search.
+			if (!(args.query && args.type === "any")) url.searchParams.set("orderBy", "folder,name");
+			const data = await googleGetJson<{
+				files?: Record<string, unknown>[];
+				nextPageToken?: string;
+			}>(env, args.account, url);
 			return {
 				files: (data.files ?? []).slice(0, args.maxResults).map((file) => ({
 					id: file.id,
@@ -442,6 +462,7 @@ export const READ_TOOLS: ReadTool[] = [
 					modifiedTime: file.modifiedTime,
 					webViewLink: file.webViewLink,
 				})),
+				moreAvailable: Boolean(data.nextPageToken),
 			};
 		},
 	}),

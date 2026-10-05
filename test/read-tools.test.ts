@@ -459,8 +459,45 @@ describe("Drive read tools", () => {
 		);
 		const params = calls.api[0].url.searchParams;
 		expect(params.get("q")).toBe("fullText contains 'bob\\'s \\\\ budget' and trashed = false");
-		expect(params.get("fields")).toBe("files(id,name,mimeType,modifiedTime,webViewLink)");
+		expect(params.get("fields")).toBe(
+			"nextPageToken,files(id,name,mimeType,modifiedTime,webViewLink)",
+		);
+		expect(params.get("orderBy")).toBeNull();
 		expect(params.get("pageSize")).toBe("10");
+	});
+
+	it("search_drive finds folders by name and lists a folder's contents", async () => {
+		const alias = await linked();
+		const calls = mockGoogle((url) => {
+			if (url.origin + url.pathname === DRIVE) {
+				return Response.json({ files: [{ id: "folder1", name: "Projects" }], nextPageToken: "n" });
+			}
+		});
+		const folders = await call("search_drive", { account: alias, query: "Projects", type: "folder" });
+		expect(folders.json().files[0].id).toBe("folder1");
+		expect(folders.json().moreAvailable).toBe(true);
+		expect(calls.api[0].url.searchParams.get("q")).toBe(
+			"name contains 'Projects' and trashed = false and mimeType = 'application/vnd.google-apps.folder'",
+		);
+
+		await call("search_drive", { account: alias, folderId: "folder1" });
+		expect(calls.api[1].url.searchParams.get("q")).toBe(
+			"trashed = false and 'folder1' in parents",
+		);
+		expect(calls.api[1].url.searchParams.get("orderBy")).toBe("folder,name");
+
+		await call("search_drive", { account: alias, query: "notes", folderId: "root" });
+		expect(calls.api[2].url.searchParams.get("q")).toBe(
+			"fullText contains 'notes' and trashed = false and 'root' in parents",
+		);
+
+		// Neither a query nor a folder, or a folder id that could break out of the query.
+		for (const args of [{}, { folderId: "x' or '1'='1" }]) {
+			const res = await call("search_drive", { account: alias, ...args });
+			expect(res.isError).toBe(true);
+			expect(res.text).toMatch(/^Invalid input/);
+		}
+		expect(calls.api).toHaveLength(3);
 	});
 
 	function driveFile(mimeType: string, content: string) {
