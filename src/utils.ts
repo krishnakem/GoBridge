@@ -35,6 +35,8 @@ export function getUpstreamAuthorizeUrl({
 	upstream.searchParams.set("scope", scope);
 	upstream.searchParams.set("response_type", "code");
 	if (state) upstream.searchParams.set("state", state);
+	// Always show the account chooser so the owner picks the right account.
+	upstream.searchParams.set("prompt", "select_account");
 	return upstream.href;
 }
 
@@ -44,3 +46,51 @@ export function getUpstreamAuthorizeUrl({
 export type Props = {
 	email: string;
 };
+
+const GOOGLE_TOKEN_URL = "https://oauth2.googleapis.com/token";
+const GOOGLE_USERINFO_URL = "https://openidconnect.googleapis.com/v1/userinfo";
+
+/**
+ * Exchanges a Google authorization code and returns Google's userinfo claims
+ * (sub, email, email_verified) for the caller to check against the allowlist.
+ *
+ * Returns null on any failure. The short-lived identity token is used once and
+ * dropped: it is never stored, logged, or returned. Google's raw responses are
+ * never logged or surfaced.
+ */
+export async function fetchGoogleIdentityClaims({
+	clientId,
+	clientSecret,
+	code,
+	redirectUri,
+}: {
+	clientId: string;
+	clientSecret: string;
+	code: string;
+	redirectUri: string;
+}): Promise<unknown | null> {
+	try {
+		const tokenResp = await fetch(GOOGLE_TOKEN_URL, {
+			body: new URLSearchParams({
+				client_id: clientId,
+				client_secret: clientSecret,
+				code,
+				grant_type: "authorization_code",
+				redirect_uri: redirectUri,
+			}).toString(),
+			headers: { "Content-Type": "application/x-www-form-urlencoded" },
+			method: "POST",
+		});
+		if (!tokenResp.ok) return null;
+		const { access_token } = (await tokenResp.json()) as { access_token?: unknown };
+		if (typeof access_token !== "string" || !access_token) return null;
+
+		const userResp = await fetch(GOOGLE_USERINFO_URL, {
+			headers: { Authorization: `Bearer ${access_token}` },
+		});
+		if (!userResp.ok) return null;
+		return await userResp.json();
+	} catch (_e) {
+		return null;
+	}
+}

@@ -1,6 +1,7 @@
 import OAuthProvider from "@cloudflare/workers-oauth-provider";
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { McpAgent } from "agents/mcp";
+import { isAllowedEmail } from "./auth";
 import { GoogleHandler } from "./google-handler";
 import type { Props } from "./utils";
 
@@ -15,9 +16,23 @@ export class GoBridgeMCP extends McpAgent<Env, Record<string, never>, Props> {
 	}
 }
 
+const mcpHandler = GoBridgeMCP.serve("/mcp");
+
+// Defense in depth: even with a valid GoBridge token, every /mcp request must
+// belong to the current ALLOWED_EMAIL (so changing the secret locks out old grants).
+const ownerOnlyMcpHandler = {
+	fetch(request: Request, env: Env, ctx: ExecutionContext<Props>) {
+		if (!isAllowedEmail(ctx.props?.email, env.ALLOWED_EMAIL)) {
+			console.warn("/mcp denied: not_allowed");
+			return new Response("Forbidden", { status: 403 });
+		}
+		return mcpHandler.fetch(request, env, ctx);
+	},
+};
+
 function createProvider(env: Env) {
 	return new OAuthProvider({
-		apiHandler: GoBridgeMCP.serve("/mcp"),
+		apiHandler: ownerOnlyMcpHandler as any,
 		apiRoute: "/mcp",
 		authorizeEndpoint: "/authorize",
 		clientRegistrationEndpoint: "/register",
