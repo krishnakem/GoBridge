@@ -16,11 +16,14 @@ import { Hono } from "hono";
 import {
 	type AuditEntry,
 	dailySendCap,
+	DAILY_SHARE_CAP,
+	KILL_SWITCHES,
 	listAudit,
 	readRateLimit,
 	WRITE_RATE_LIMIT_PER_HOUR,
 	writesEnabled,
 	writeUsage,
+	switchEnabled,
 } from "./guardrails";
 import { escapeHtml, renderMessagePage, renderOwnerPage } from "./html";
 import { ownerStatus } from "./owner-status";
@@ -48,6 +51,13 @@ function auditDetails(entry: AuditEntry): string {
 	if (meta.removeLabelIds?.length) parts.push(`Removed: ${meta.removeLabelIds.join(", ")}`);
 	if (meta.messageId) parts.push(`Message id: ${meta.messageId}`);
 	if (meta.draftId) parts.push(`Draft id: ${meta.draftId}`);
+	if (meta.threadId) parts.push(`Thread id: ${meta.threadId}`);
+	if (meta.originalMessageId) parts.push(`Forwarded message id: ${meta.originalMessageId}`);
+	if (meta.labelIds?.length) parts.push(`Labels: ${meta.labelIds.join(", ")}`);
+	if (meta.action) parts.push(`Action: ${meta.action}`);
+	if (meta.fileId) parts.push(`File id: ${meta.fileId}`);
+	if (meta.parentId) parts.push(`Folder id: ${meta.parentId}`);
+	if (meta.recipient) parts.push(`Shared with: ${meta.recipient}${meta.role ? ` (${meta.role})` : ""}`);
 	if (meta.resultCount !== undefined) parts.push(`Items returned: ${meta.resultCount}`);
 	return parts.map(escapeHtml).join("<br>");
 }
@@ -236,6 +246,7 @@ app.get("/settings", async (c) => {
 <td>${usage[i] ? `${usage[i].sendsToday} of ${cap}` : "unavailable"}</td>
 <td>${usage[i] ? `${usage[i].writesThisHour} of ${WRITE_RATE_LIMIT_PER_HOUR}` : "unavailable"}</td>
 <td>${usage[i] ? `${usage[i].readsThisHour} of ${readRateLimit(c.env)}` : "unavailable"}</td>
+<td>${usage[i] ? `${usage[i].sharesToday} of ${DAILY_SHARE_CAP}` : "unavailable"}</td>
 <td>${
 				attention.relink.includes(account.alias)
 					? '<span class="badge badge-alert">Needs re-link</span>'
@@ -246,15 +257,29 @@ app.get("/settings", async (c) => {
 		.join("\n");
 	const table = accounts.length
 		? `<div class="table-wrap"><table>
-<tr><th>Account</th><th>Emails sent today (UTC)</th><th>Writes this hour</th><th>Reads this hour</th><th>Status</th></tr>
+<tr><th>Account</th><th>Emails sent today (UTC)</th><th>Writes this hour</th><th>Reads this hour</th><th>Files shared today</th><th>Status</th></tr>
 ${rows}
 </table></div>`
 		: `<p class="muted">No accounts linked yet.</p>`;
 
+	const switchRows = KILL_SWITCHES.map((name) => {
+		const on = switchEnabled(c.env, name);
+		const label = {
+			DIRECT_SEND_ENABLED: "Send without a draft, and reply",
+			DRIVE_SHARE_ENABLED: "Share Drive files",
+			DRIVE_WRITE_ENABLED: "Create, copy, rename, move or trash Drive files",
+			FORWARD_ENABLED: "Forward emails",
+			WRITES_ENABLED: "All write tools",
+		}[name];
+		return `<dt>${escapeHtml(label)} <span class="muted mono small">${name}</span></dt><dd>${on ? '<span class="badge badge-ok">On</span>' : '<span class="badge badge-alert">Off</span>'}</dd>`;
+	}).join("\n");
 	const warnings = [
 		enabled
 			? ""
 			: '<p class="warn">Writes are off. Every write tool answers "Writes disabled" until WRITES_ENABLED is set back to "true" and deployed.</p>',
+		attention.switchesOff?.length
+			? `<p class="warn">Switched off: ${escapeHtml(attention.switchesOff.join(", "))}. Those tools answer "switched off by the owner" until the variable is set back to "true" and deployed.</p>`
+			: "",
 		attention.relink.length
 			? `<p class="warn">Needs re-link: ${escapeHtml(attention.relink.join(", "))}. Fix this on the <a href="/link">Linked accounts</a> page.</p>`
 			: "",
@@ -267,8 +292,9 @@ ${rows}
 <p class="muted">Read-only status. To change a setting, edit <code>wrangler.jsonc</code> and deploy.</p>
 <dl class="facts">
 <dt>Environment</dt><dd>${escapeHtml(environmentName(c.env))} <span class="muted mono small">${escapeHtml(c.env.BASE_URL)}</span></dd>
-<dt>Write tools (WRITES_ENABLED)</dt><dd>${enabled ? '<span class="badge badge-ok">On</span>' : '<span class="badge badge-alert">Off</span>'}</dd>
-<dt>Daily send cap</dt><dd>${cap} emails per account per day</dd>
+${switchRows}
+<dt>Daily send cap</dt><dd>${cap} emails per account per day (send_message, reply and forward)</dd>
+<dt>Daily share cap</dt><dd>${DAILY_SHARE_CAP} share_file calls per account per day</dd>
 <dt>Write rate limit</dt><dd>${WRITE_RATE_LIMIT_PER_HOUR} write actions per account per hour</dd>
 <dt>Read rate limit</dt><dd>${readRateLimit(c.env)} read actions per account per hour</dd>
 <dt>Owner session lifetime</dt><dd>${SESSION_TTL_SECONDS / 3600} hours, then you sign in again</dd>

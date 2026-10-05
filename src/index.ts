@@ -4,9 +4,8 @@ import { McpAgent } from "agents/mcp";
 import { isAllowedEmail } from "./auth";
 import { GoogleHandler } from "./google-handler";
 import { purgeOldAudit } from "./guardrails";
-import { registerReadTools } from "./read-tools";
 import type { Props } from "./utils";
-import { registerWriteTools } from "./write-tools";
+import { registerTools } from "./tools";
 
 export { UsageCounter } from "./usage-counter";
 
@@ -17,8 +16,7 @@ export class GoBridgeMCP extends McpAgent<Env, Record<string, never>, Props> {
 	});
 
 	async init() {
-		registerReadTools(this.server, this.env, () => this.props);
-		registerWriteTools(this.server, this.env, () => this.props);
+		registerTools(this.server, this.env, () => this.props);
 	}
 }
 

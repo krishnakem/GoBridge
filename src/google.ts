@@ -12,17 +12,28 @@ const GOOGLE_USERINFO_URL = "https://openidconnect.googleapis.com/v1/userinfo";
 
 /**
  * EXACTLY the scopes a linked account grants. Changing this list requires the
- * owner's explicit approval (see SPEC.md). Never add https://mail.google.com/,
- * gmail.settings.*, the full calendar scope, or any Drive write scope.
+ * owner's explicit approval (see SPEC.md and PARITY.md). Never add
+ * https://mail.google.com/, gmail.settings.*, or the full calendar scope.
  */
 export const LINK_SCOPES = [
 	"https://www.googleapis.com/auth/gmail.modify",
 	"https://www.googleapis.com/auth/gmail.send",
 	"https://www.googleapis.com/auth/calendar.events",
-	"https://www.googleapis.com/auth/drive.readonly",
+	"https://www.googleapis.com/auth/calendar.calendarlist.readonly",
+	"https://www.googleapis.com/auth/calendar.freebusy",
+	"https://www.googleapis.com/auth/drive",
 	"openid",
 	"email",
 ] as const;
+
+/** True when a stored account was linked with exactly the current scope list. */
+export function hasCurrentScopes(scopes: unknown): boolean {
+	return (
+		Array.isArray(scopes) &&
+		scopes.length === LINK_SCOPES.length &&
+		LINK_SCOPES.every((scope) => scopes.includes(scope))
+	);
+}
 
 /** Google reports the `email` scope under its long name. */
 function normalizeScope(scope: string): string {

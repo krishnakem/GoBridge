@@ -1,9 +1,10 @@
 import { env, SELF } from "cloudflare:test";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { aliasesNeedingRelink, deleteAccount, markNeedsRelink, saveAccount } from "../src/accounts";
+import { LINK_SCOPES } from "../src/google";
 import { clearAccessTokenCache } from "../src/google-api";
 import { OwnerPages } from "../src/owner-pages";
-import { runReadTool } from "../src/read-tools";
+import { runReadTool } from "../src/tools";
 import { APP_CSS, MENU_JS } from "../src/static-assets";
 
 const BASE = "https://gobridge.test";
@@ -213,7 +214,7 @@ describe("/settings", () => {
 			alias: "settings-acct",
 			email: "settings@example.com",
 			refreshToken: "1//fake-google-refresh-token",
-			scopes: [],
+			scopes: [...LINK_SCOPES],
 			sub: "settings-sub",
 		});
 		const counter = env.USAGE_COUNTER.get(env.USAGE_COUNTER.idFromName("settings-acct"));
@@ -289,7 +290,7 @@ describe("attention dot", () => {
 			alias: "stale-acct",
 			email: "stale@example.com",
 			refreshToken: "1//fake-google-refresh-token",
-			scopes: [],
+			scopes: [...LINK_SCOPES],
 			sub: "stale-sub",
 		};
 		await saveAccount(env, account);
@@ -317,6 +318,36 @@ describe("attention dot", () => {
 		expect(await (await get("/link", owner.cookie)).text()).not.toContain('class="dot"');
 		await deleteAccount(env, "stale-acct");
 		await deleteAccount(env, "ghost-acct");
+	});
+});
+
+describe("stale scopes", () => {
+	it("flags an account linked with the old scope list as needing re-link", async () => {
+		mockGoogle();
+		await saveAccount(env, {
+			alias: "old-scopes",
+			email: "old@example.com",
+			refreshToken: "1//fake-google-refresh-token",
+			scopes: [...LINK_SCOPES.filter((s) => !s.endsWith("/drive")), "https://www.googleapis.com/auth/drive.readonly"],
+			sub: "old-sub",
+		});
+		const owner = await signIn();
+		const html = await (await get("/link", owner.cookie)).text();
+		expect(html).toContain('<span class="menu-flag">Re-link needed</span>');
+		expect(html).toContain("Needs re-link: old-scopes");
+		const settings = await (await get("/settings", owner.cookie)).text();
+		expect(settings).toContain("DIRECT_SEND_ENABLED");
+		expect(settings).toContain("DRIVE_SHARE_ENABLED");
+		await deleteAccount(env, "old-scopes");
+	});
+
+	it("shows Feature off when a feature switch is off", async () => {
+		mockGoogle();
+		const owner = await signIn();
+		const html = await (await getWithEnv("/settings", owner.cookie, { FORWARD_ENABLED: "false" } as Partial<Env>)).text();
+		expect(html.match(/<span class="dot"><\/span>/g)).toHaveLength(2);
+		expect(html).toContain('<span class="menu-flag">Feature off</span>');
+		expect(html).toContain("Switched off: FORWARD_ENABLED");
 	});
 });
 

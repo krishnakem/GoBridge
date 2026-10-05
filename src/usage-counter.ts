@@ -9,11 +9,11 @@
  */
 import { DurableObject } from "cloudflare:workers";
 
-export type CounterKind = "read" | "write" | "send";
+export type CounterKind = "read" | "write" | "send" | "share";
 
-/** Reads and writes are counted per UTC hour; sends per UTC day. */
+/** Reads and writes are counted per UTC hour; sends and shares per UTC day. */
 export function counterWindow(kind: CounterKind, now: number): string {
-	return kind === "send"
+	return kind === "send" || kind === "share"
 		? new Date(now).toISOString().slice(0, 10)
 		: `h${Math.floor(now / 3_600_000)}`;
 }
@@ -54,6 +54,11 @@ export class UsageCounter extends DurableObject<Env> {
 
 	/** Current counts, for the /settings page. Changes nothing. */
 	usage(): CounterUsage {
-		return { read: this.current("read"), send: this.current("send"), write: this.current("write") };
+		return {
+			read: this.current("read"),
+			send: this.current("send"),
+			share: this.current("share"),
+			write: this.current("write"),
+		};
 	}
 }

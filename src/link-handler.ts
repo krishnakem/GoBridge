@@ -117,7 +117,7 @@ ${rows}
 </table></div>`
 		: `<p class="muted">No accounts linked yet.</p>`;
 	const relinkHelp = attention.relink.length
-		? `<p class="warn">Google no longer accepts GoBridge's access for: ${escapeHtml(attention.relink.join(", "))}. Unlink each one, then link it again with the same alias.</p>`
+		? `<p class="warn">Needs re-link: ${escapeHtml(attention.relink.join(", "))}. Either Google no longer accepts GoBridge's access, or the account was linked before the current permissions were added. Unlink each one, then link it again with the same alias.</p>`
 		: "";
 
 	return renderOwnerPage({

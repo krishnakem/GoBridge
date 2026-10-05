@@ -24,6 +24,9 @@ export type ToolErrorCategory =
 	| "send_cap_reached"
 	| "client_unknown"
 	| "counter_unavailable"
+	| "feature_disabled"
+	| "share_cap_reached"
+	| "too_large"
 	| "internal";
 
 /** An error whose message is safe to show to the MCP client as-is. */
@@ -120,6 +123,8 @@ export type GoogleRequestOptions = {
 	headers?: Record<string, string>;
 	/** Sent as a JSON body. */
 	json?: unknown;
+	/** Sent as-is (set Content-Type in headers). */
+	body?: string | Uint8Array;
 	/** The input most likely at fault if Google answers "not found" or "bad request", e.g. "message id". */
 	what?: string;
 };
@@ -138,7 +143,10 @@ export async function googleRequest(
 	let resp: Response;
 	try {
 		resp = await fetch(url, {
-			body: options.json === undefined ? undefined : JSON.stringify(options.json),
+			body:
+				options.json === undefined
+					? (options.body as BodyInit | undefined)
+					: JSON.stringify(options.json),
 			headers: {
 				...options.headers,
 				...(options.json === undefined ? {} : { "Content-Type": "application/json" }),
@@ -157,7 +165,10 @@ export async function googleRequest(
 			accessTokens.delete(alias);
 			throw await needsRelink(env, alias);
 		case 403:
-			throw new ToolError("google_denied", "Google refused this request for this account.");
+			throw new ToolError(
+				"google_denied",
+				"Google refused this request for this account. If the account was linked before the latest permissions were added, re-link it at /link.",
+			);
 		case 404:
 		case 410:
 			throw new ToolError(

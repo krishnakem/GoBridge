@@ -21,6 +21,29 @@ import { ToolError } from "./google-api";
 import type { CounterKind } from "./usage-counter";
 
 export const WRITE_RATE_LIMIT_PER_HOUR = 60;
+export const DAILY_SHARE_CAP = 10;
+
+/**
+ * Feature kill switches (non-secret vars). Each must be exactly "true" to be on.
+ * WRITES_ENABLED gates every mutating tool; the others gate one feature each.
+ */
+export const KILL_SWITCHES = [
+	"WRITES_ENABLED",
+	"DIRECT_SEND_ENABLED",
+	"FORWARD_ENABLED",
+	"DRIVE_WRITE_ENABLED",
+	"DRIVE_SHARE_ENABLED",
+] as const;
+export type KillSwitch = (typeof KILL_SWITCHES)[number];
+
+export function switchEnabled(env: Env, name: KillSwitch): boolean {
+	return (env as unknown as Record<string, unknown>)[name] === "true";
+}
+
+/** Names of the switches that are currently off. */
+export function switchesOff(env: Env): KillSwitch[] {
+	return KILL_SWITCHES.filter((name) => !switchEnabled(env, name));
+}
 export const AUDIT_RETENTION_DAYS = 90;
 const DEFAULT_DAILY_SEND_CAP = 25;
 const DEFAULT_READ_RATE_LIMIT = 300;
@@ -102,14 +125,34 @@ export async function reserveDailySend(env: Env, alias: string): Promise<void> {
 	}
 }
 
+/** Reserves one share_file call for this account today (UTC); throws once the daily cap is reached. */
+export async function reserveDailyShare(env: Env, alias: string): Promise<void> {
+	if (!(await take(env, alias, "share", DAILY_SHARE_CAP))) {
+		throw new ToolError(
+			"share_cap_reached",
+			`Daily share cap reached: at most ${DAILY_SHARE_CAP} share_file calls per account per day. Nothing was shared.`,
+		);
+	}
+}
+
 /** Read-only view of an account's counters, for the /settings page. Null if unavailable. */
 export async function writeUsage(
 	env: Env,
 	alias: string,
-): Promise<{ sendsToday: number; writesThisHour: number; readsThisHour: number } | null> {
+): Promise<{
+	sendsToday: number;
+	sharesToday: number;
+	writesThisHour: number;
+	readsThisHour: number;
+} | null> {
 	try {
 		const usage = await counterFor(env, alias).usage();
-		return { readsThisHour: usage.read, sendsToday: usage.send, writesThisHour: usage.write };
+		return {
+			readsThisHour: usage.read,
+			sendsToday: usage.send,
+			sharesToday: usage.share ?? 0,
+			writesThisHour: usage.write,
+		};
 	} catch (_e) {
 		return null;
 	}
@@ -129,6 +172,16 @@ export type AuditMeta = {
 	summary?: string;
 	sendUpdates?: string;
 	response?: string;
+	threadId?: string;
+	labelIds?: string[];
+	/** Forwards: the message that was forwarded. */
+	originalMessageId?: string;
+	/** Drive writes and shares. */
+	fileId?: string;
+	action?: string;
+	parentId?: string;
+	role?: string;
+	recipient?: string;
 	/** Reads only: how many items came back. Never what they were. */
 	resultCount?: number;
 };
@@ -165,6 +218,14 @@ function sanitizeMeta(meta: AuditMeta): AuditMeta {
 		sendUpdates: clip(meta.sendUpdates, 20),
 		subject: clip(meta.subject, 300),
 		summary: clip(meta.summary, 300),
+		threadId: clip(meta.threadId, 256),
+		labelIds: list(meta.labelIds, 20),
+		originalMessageId: clip(meta.originalMessageId, 256),
+		fileId: clip(meta.fileId, 256),
+		action: clip(meta.action, 40),
+		parentId: clip(meta.parentId, 256),
+		role: clip(meta.role, 20),
+		recipient: clip(meta.recipient, 254),
 	};
 }
 
