@@ -25,7 +25,7 @@ import {
 	LINK_SCOPES,
 	revokeGoogleToken,
 } from "./google";
-import { escapeHtml, renderMessagePage, renderPage } from "./html";
+import { escapeHtml, OWNER_NAV, renderMessagePage, renderPage } from "./html";
 import { hasValidCsrf, type OwnerSession, readOwnerSession, startOwnerLogin } from "./session";
 
 const LINK_STATE_TTL_SECONDS = 600;
@@ -57,7 +57,7 @@ function denied(message: string, status: 400 | 403 | 404 | 502, category: string
 }
 
 /** Session + CSRF gate for every state-changing owner action. */
-async function requireOwnerPost(
+export async function requireOwnerPost(
 	c: LinkContext,
 	route: string,
 ): Promise<{ session: OwnerSession; form: FormData } | Response> {
@@ -119,7 +119,8 @@ ${table}
 <button type="submit">Continue to Google</button>
 </form>
 <p class="muted">Lowercase letters, numbers and hyphens only. On Google's screen, leave every permission ticked: GoBridge refuses a partial grant.</p>
-<p class="muted">Signed in as ${escapeHtml(session.email)}.</p>`,
+<p class="muted">Signed in as ${escapeHtml(session.email)}.</p>
+${OWNER_NAV}`,
 	);
 }
 

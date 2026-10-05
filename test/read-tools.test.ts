@@ -785,8 +785,8 @@ describe("over /mcp", () => {
 
 		const list = await rpc(token, session, { id: 2, method: "tools/list" });
 		const tools = list.message.result.tools as { name: string; annotations: any; inputSchema: any }[];
-		expect(tools.map((t) => t.name).sort()).toEqual(READ_TOOLS.map((t) => t.name).sort());
-		expect(tools.every((t) => t.annotations.readOnlyHint === true)).toBe(true);
+		const readOnly = tools.filter((t) => t.annotations.readOnlyHint === true);
+		expect(readOnly.map((t) => t.name).sort()).toEqual(READ_TOOLS.map((t) => t.name).sort());
 		const search = tools.find((t) => t.name === "search_emails")!;
 		expect(search.inputSchema.properties.maxResults.maximum).toBe(20);
 		expect(search.inputSchema.required).toContain("account");

@@ -14,6 +14,10 @@ export const HTML_SECURITY_HEADERS: Record<string, string> = {
 	"X-Frame-Options": "DENY",
 };
 
+/** Links between the owner-only pages. */
+export const OWNER_NAV =
+	'<p class="muted"><a href="/link">Linked accounts</a> · <a href="/audit">Recent writes</a> · <a href="/clients">AI clients</a></p>';
+
 /** Escapes text for use in HTML content or attribute values. */
 export const escapeHtml = sanitizeText;
 

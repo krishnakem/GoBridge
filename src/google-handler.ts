@@ -3,6 +3,7 @@ import { Hono } from "hono";
 import { verifyOwner } from "./auth";
 import { renderMessagePage } from "./html";
 import { LinkHandler } from "./link-handler";
+import { OwnerPages } from "./owner-pages";
 import { finishOwnerLogin, OWNER_LOGIN_STATE_PREFIX } from "./session";
 import {
 	fetchGoogleIdentityClaims,
@@ -201,12 +202,16 @@ app.get("/callback", async (c) => {
 		);
 	}
 
-	// Only the owner reaches this point. Props carry the email only: no Google token.
+	// Only the owner reaches this point. Props carry the owner email and which MCP
+	// client the grant is for (for the audit log): never a Google token.
+	const client = await c.env.OAUTH_PROVIDER.lookupClient(oauthReqInfo.clientId);
 	const { redirectTo } = await c.env.OAUTH_PROVIDER.completeAuthorization({
 		metadata: {
 			label: owner.email,
 		},
 		props: {
+			clientId: oauthReqInfo.clientId,
+			clientName: client?.clientName?.slice(0, 100),
 			email: owner.email,
 		} as Props,
 		request: oauthReqInfo,
@@ -218,7 +223,8 @@ app.get("/callback", async (c) => {
 	return new Response(null, { status: 302, headers });
 });
 
-// Owner-only pages: /link, /link/callback, /link/unlink
+// Owner-only pages: /link, /link/callback, /link/unlink, /audit, /clients, /clients/revoke
 app.route("/", LinkHandler);
+app.route("/", OwnerPages);
 
 export { app as GoogleHandler };

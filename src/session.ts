@@ -20,7 +20,7 @@ const LOGIN_STATE_TTL_SECONDS = 600;
 export const OWNER_LOGIN_STATE_PREFIX = "owner-";
 
 /** Owner pages a login may return to. Never redirect anywhere else. */
-const OWNER_PAGES = ["/link"] as const;
+const OWNER_PAGES = ["/link", "/audit", "/clients"] as const;
 type OwnerPage = (typeof OWNER_PAGES)[number];
 
 export type OwnerSession = {
