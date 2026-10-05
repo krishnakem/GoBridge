@@ -5,7 +5,14 @@ import { b64urlDecode, b64urlEncode } from "../src/crypto";
 import { clearAccessTokenCache } from "../src/google-api";
 import { listAudit, WRITE_RATE_LIMIT_PER_HOUR } from "../src/guardrails";
 import { READ_TOOLS } from "../src/read-tools";
-import { registerWriteTools, runWriteTool, WRITE_TOOLS } from "../src/write-tools";
+import {
+	assertLabelBatchLimit,
+	assertRecipientLimit,
+	formatInZone,
+	registerWriteTools,
+	runWriteTool,
+	WRITE_TOOLS,
+} from "../src/write-tools";
 
 const BASE = "https://gobridge.test";
 const CLIENT_REDIRECT = "https://client.example/callback";
@@ -76,6 +83,7 @@ function mockGoogle(route: Route = () => undefined) {
 			return Response.json({
 				id: "draft1",
 				message: {
+					labelIds: ["DRAFT"],
 					threadId: "dt1",
 					payload: {
 						headers: [
@@ -103,6 +111,7 @@ function mockGoogle(route: Route = () => undefined) {
 		}
 		if (method === "POST" && path.endsWith("/batchModify")) return new Response(null, { status: 204 });
 		if (method === "POST" && path.endsWith("/trash")) return Response.json({ id: "m1" });
+		if (method === "DELETE" && path.includes("/drafts/")) return new Response(null, { status: 204 });
 		if (path.includes("/calendars/")) {
 			if (method === "DELETE") return new Response(null, { status: 204 });
 			return Response.json({
@@ -130,8 +139,14 @@ async function call(name: string, args: Record<string, unknown>, options: { env?
 		args,
 	);
 	const text = result.content.map((c) => c.text).join("\n");
-	return { isError: result.isError === true, text, json: () => JSON.parse(text) };
+	return { isError: result.isError === true, text, json: () => JSON.parse(text, unwrap) };
 }
+
+/** JSON reviver that removes the <untrusted_content> wrapper, to assert on the values inside. */
+const unwrap = (_key: string, value: unknown) =>
+	typeof value === "string"
+		? value.replace(/^<untrusted_content source="[a-z]+">([\s\S]*)<\/untrusted_content>$/, "$1")
+		: value;
 
 const auditFor = async (alias: string) => (await listAudit(env, 1000)).filter((e) => e.alias === alias);
 
@@ -149,6 +164,7 @@ function validArgs(alias: string): Record<string, Record<string, unknown>> {
 		create_draft: draft,
 		update_draft: { ...draft, draftId: "draft1" },
 		send_draft: { account: alias, draftId: "draft1" },
+		delete_draft: { account: alias, draftId: "draft1" },
 		modify_labels: { account: alias, messageIds: ["m1"], removeLabelIds: ["UNREAD"] },
 		trash_message: { account: alias, messageId: "m1" },
 		create_event: {
@@ -194,14 +210,14 @@ describe("write tool registration", () => {
 		for (const { config } of registered) expect(config.annotations.readOnlyHint).toBe(false);
 		const destructive = registered.filter((r) => r.config.annotations.destructiveHint).map((r) => r.name);
 		expect(destructive.sort()).toEqual(
-			["delete_event", "send_draft", "trash_message", "update_draft", "update_event"].sort(),
+			["delete_draft", "delete_event", "send_draft", "trash_message", "update_draft", "update_event"].sort(),
 		);
 	});
 
 	it("has no forwarding, direct-send, settings, or permanent-delete tool", () => {
 		const names = [...READ_TOOLS, ...WRITE_TOOLS].map((t) => t.name);
 		for (const name of names) {
-			expect(name).not.toMatch(/forward|filter|setting|vacation|delegat|permanent|send_(message|email)|^send$|^delete_(message|email|draft)/);
+			expect(name).not.toMatch(/forward|filter|setting|vacation|delegat|permanent|send_(message|email)|^send$|^delete_(message|email|thread)/);
 		}
 		expect(names.filter((n) => n.includes("send"))).toEqual(["send_draft"]);
 	});
@@ -934,7 +950,7 @@ describe("owner sign-out", () => {
 		for (const page of PAGES) {
 			const html = await (await get(page, owner.cookie)).text();
 			expect(html, page).toContain('action="/logout"');
-			expect(html).toContain("Sign out");
+			expect(html).toContain("Sign Out");
 		}
 	});
 
@@ -966,9 +982,8 @@ describe("owner sign-out", () => {
 		await expectSignedIn(owner.cookie);
 
 		const res = await logout(owner.cookie, { csrf_token: owner.csrf });
-		expect(res.status).toBe(200);
-		expect(await res.text()).toContain("Signed out");
-		expect(res.headers.get("X-Frame-Options")).toBe("DENY");
+		expect(res.status).toBe(303);
+		expect(res.headers.get("Location")).toBe("/signed-out");
 		const cleared = res.headers.getSetCookie().find((c) => c.startsWith("__Host-GOBRIDGE_SESSION="))!;
 		expect(cleared).toBe("__Host-GOBRIDGE_SESSION=; HttpOnly; Secure; Path=/; SameSite=Lax; Max-Age=0");
 
@@ -988,5 +1003,176 @@ describe("owner sign-out", () => {
 
 		await expectSignedIn(other.cookie);
 		expect(allLogOutput()).not.toContain("owner@example.com");
+	});
+});
+
+describe("delete_draft", () => {
+	it("deletes one draft through the drafts endpoint only, and audits it", async () => {
+		const alias = await linked();
+		const calls = mockGoogle();
+		const res = await call("delete_draft", { account: alias, draftId: "draft1" });
+		expect(res.json()).toEqual({ deleted: true, draftId: "draft1" });
+		expect(calls.map((c) => `${c.method} ${c.path}`)).toEqual([
+			"GET /gmail/v1/users/me/drafts/draft1",
+			"DELETE /gmail/v1/users/me/drafts/draft1",
+		]);
+		const [entry] = await auditFor(alias);
+		expect(entry).toMatchObject({ clientId: "client-abc", outcome: "ok", tool: "delete_draft" });
+		expect(entry.meta).toMatchObject({ draftId: "draft1", subject: "Lunch on Friday" });
+		expect(WRITE_TOOLS.find((t) => t.name === "delete_draft")!.destructive).toBe(true);
+	});
+
+	it("refuses a non-draft id and deletes nothing", async () => {
+		const alias = await linked();
+		// A message id is not a draft id: Google has no such draft.
+		let calls = mockGoogle((c) => {
+			if (c.method === "GET") return new Response('{"error":"raw google detail"}', { status: 404 });
+		});
+		const missing = await call("delete_draft", { account: alias, draftId: "msg123" });
+		expect(missing.isError).toBe(true);
+		expect(missing.text).toContain("draft id");
+		expect(missing.text).not.toContain("raw google detail");
+		expect(calls.some((c) => c.method === "DELETE")).toBe(false);
+
+		// Something that exists but is not an unsent draft (no DRAFT label, or a different id).
+		for (const body of [
+			{ id: "draft1", message: { labelIds: ["SENT"] } },
+			{ id: "draft1", message: {} },
+			{ id: "other", message: { labelIds: ["DRAFT"] } },
+		]) {
+			vi.restoreAllMocks();
+			calls = mockGoogle((c) => (c.method === "GET" ? Response.json(body) : undefined));
+			const res = await call("delete_draft", { account: alias, draftId: "draft1" });
+			expect(res.isError).toBe(true);
+			expect(res.text).toContain("not an unsent draft");
+			expect(calls.some((c) => c.method === "DELETE")).toBe(false);
+		}
+		// Never a messages endpoint.
+		expect(calls.some((c) => c.path.includes("/messages"))).toBe(false);
+	});
+
+	it("is covered by the kill switch and the write rate limit", async () => {
+		const alias = await linked();
+		const calls = mockGoogle();
+		const off = await call(
+			"delete_draft",
+			{ account: alias, draftId: "draft1" },
+			{ env: { ...env, WRITES_ENABLED: "false" } as Env },
+		);
+		expect(off.text).toMatch(/^Writes disabled/);
+		expect(calls).toHaveLength(0);
+
+		for (let i = 0; i < WRITE_RATE_LIMIT_PER_HOUR; i++) {
+			await call("trash_message", { account: alias, messageId: "m1" });
+		}
+		const limited = await call("delete_draft", { account: alias, draftId: "draft1" });
+		expect(limited.text).toContain("Rate limit reached");
+		expect(calls.some((c) => c.method === "DELETE")).toBe(false);
+	});
+});
+
+describe("server-side limits, independent of the input schema", () => {
+	const many = (n: number) => Array.from({ length: n }, (_x, i) => `p${i}@example.com`);
+	const run = (name: string, args: Record<string, unknown>) =>
+		WRITE_TOOLS.find((t) => t.name === name)!.run(env, args as any, {});
+
+	it("assertRecipientLimit allows 20 recipients in total and rejects 21", () => {
+		expect(() => assertRecipientLimit({ to: many(20) })).not.toThrow();
+		expect(() => assertRecipientLimit({ to: many(10), cc: many(5), bcc: many(5) })).not.toThrow();
+		expect(() => assertRecipientLimit({ to: many(21) })).toThrow(/at most 20 recipients/);
+		expect(() => assertRecipientLimit({ to: many(1), cc: many(10), bcc: many(10) })).toThrow(
+			/at most 20 recipients/,
+		);
+		expect(() => assertRecipientLimit({ bcc: many(21) })).toThrow(/at most 20 recipients/);
+	});
+
+	it("assertLabelBatchLimit allows 50 message ids and rejects 51", () => {
+		expect(() => assertLabelBatchLimit(many(50))).not.toThrow();
+		expect(() => assertLabelBatchLimit(many(51))).toThrow(/at most 50 message ids/);
+	});
+
+	it("the tools enforce both limits even when called without schema validation", async () => {
+		const alias = await linked();
+		const calls = mockGoogle();
+		const draft = { account: alias, to: many(15), cc: many(6), bcc: [], subject: "s", body: "b" };
+		await expect(run("create_draft", draft)).rejects.toThrow(/at most 20 recipients/);
+		await expect(run("update_draft", { ...draft, draftId: "draft1" })).rejects.toThrow(
+			/at most 20 recipients/,
+		);
+		await expect(
+			run("modify_labels", {
+				account: alias,
+				addLabelIds: [],
+				messageIds: Array.from({ length: 51 }, (_x, i) => `m${i}`),
+				removeLabelIds: ["UNREAD"],
+			}),
+		).rejects.toThrow(/at most 50 message ids/);
+		expect(calls).toHaveLength(0);
+	});
+});
+
+describe("calendar time zones", () => {
+	it("defaults to America/Detroit and returns times in that zone", async () => {
+		const alias = await linked();
+		const calls = mockGoogle();
+		const res = await call("create_event", {
+			account: alias,
+			summary: "Standup",
+			start: "2026-10-06T09:00:00",
+			end: "2026-10-06T09:30:00",
+		});
+		expect(calls[0].body.start).toEqual({ dateTime: "2026-10-06T09:00:00", timeZone: "America/Detroit" });
+		expect(calls[0].body.end).toEqual({ dateTime: "2026-10-06T09:30:00", timeZone: "America/Detroit" });
+		expect(res.json().timeZone).toBe("America/Detroit");
+	});
+
+	it("passes an explicit timeZone through and converts the returned times", async () => {
+		const alias = await linked();
+		const calls = mockGoogle((c) => {
+			if (c.method === "POST" || c.method === "PATCH") {
+				return Response.json({
+					id: "evt1",
+					summary: "Call",
+					start: { dateTime: "2026-10-06T14:00:00Z" },
+					end: { dateTime: "2026-10-06T15:00:00Z" },
+				});
+			}
+		});
+		const created = await call("create_event", {
+			account: alias,
+			summary: "Call",
+			start: "2026-10-06T16:00:00",
+			end: "2026-10-06T17:00:00",
+			timeZone: "Europe/Berlin",
+		});
+		expect(calls[0].body.start).toEqual({ dateTime: "2026-10-06T16:00:00", timeZone: "Europe/Berlin" });
+		expect(created.json()).toMatchObject({
+			start: "2026-10-06T16:00:00+02:00",
+			end: "2026-10-06T17:00:00+02:00",
+			timeZone: "Europe/Berlin",
+		});
+
+		const updated = await call("update_event", {
+			account: alias,
+			eventId: "evt1",
+			start: "2026-10-06T10:00:00",
+			timeZone: "Asia/Kolkata",
+		});
+		expect(calls[1].body).toEqual({ start: { dateTime: "2026-10-06T10:00:00", timeZone: "Asia/Kolkata" } });
+		expect(updated.json().start).toBe("2026-10-06T19:30:00+05:30");
+
+		// Default zone on the way out too: 14:00Z is 10:00 in Detroit in October.
+		const plain = await call("update_event", { account: alias, eventId: "evt1", summary: "Call" });
+		expect(plain.json().start).toBe("2026-10-06T10:00:00-04:00");
+		expect(formatInZone("2026-01-15T12:00:00Z", "America/Detroit")).toBe("2026-01-15T07:00:00-05:00");
+	});
+
+	it("rejects an unknown time zone", async () => {
+		const alias = await linked();
+		const calls = mockGoogle();
+		const res = await call("create_event", { ...validArgs(alias).create_event, timeZone: "Mars/Olympus" });
+		expect(res.isError).toBe(true);
+		expect(res.text).toMatch(/^Invalid input/);
+		expect(calls).toHaveLength(0);
 	});
 });

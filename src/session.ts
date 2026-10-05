@@ -15,14 +15,14 @@ const SESSION_COOKIE = "__Host-GOBRIDGE_SESSION";
 const LOGIN_STATE_COOKIE = "__Host-GOBRIDGE_LOGIN_STATE";
 const SESSION_PURPOSE = "owner-session";
 /** Maximum lifetime of an owner session: 2 hours, then the owner signs in again. */
-const SESSION_TTL_SECONDS = 2 * 60 * 60;
+export const SESSION_TTL_SECONDS = 2 * 60 * 60;
 const LOGIN_STATE_TTL_SECONDS = 600;
 
 /** Prefix that tells /callback a state belongs to an owner-page login, not an MCP grant. */
 export const OWNER_LOGIN_STATE_PREFIX = "owner-";
 
 /** Owner pages a login may return to. Never redirect anywhere else. */
-const OWNER_PAGES = ["/link", "/audit", "/clients"] as const;
+const OWNER_PAGES = ["/link", "/audit", "/clients", "/settings"] as const;
 type OwnerPage = (typeof OWNER_PAGES)[number];
 
 export type OwnerSession = {
