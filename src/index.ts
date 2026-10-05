@@ -14,7 +14,7 @@ export class GoBridgeMCP extends McpAgent<Env, Record<string, never>, Props> {
 	});
 
 	async init() {
-		registerReadTools(this.server, this.env);
+		registerReadTools(this.server, this.env, () => this.props);
 		registerWriteTools(this.server, this.env, () => this.props);
 	}
 }

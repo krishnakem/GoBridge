@@ -11,6 +11,7 @@ export default defineConfig({
 					BASE_URL: "https://gobridge.test",
 					WRITES_ENABLED: "true",
 					DAILY_SEND_CAP: "25",
+					READ_RATE_LIMIT_PER_HOUR: "300",
 					GOOGLE_CLIENT_ID: "test-google-client-id",
 					GOOGLE_CLIENT_SECRET: "test-google-client-secret",
 					ALLOWED_EMAIL: "owner@example.com",
