@@ -99,6 +99,8 @@ export type Attention = {
 	writesOff: boolean;
 	/** Aliases of linked accounts that must be linked again */
 	relink: string[];
+	/** Other feature switches that are off (DIRECT_SEND_ENABLED, ...) */
+	switchesOff?: string[];
 };
 
 export type OwnerPath = "/link" | "/audit" | "/clients" | "/settings";
@@ -139,8 +141,15 @@ function accountMenu(
 	attention: Attention,
 ): string {
 	const email = escapeHtml(session.email);
-	const needsAttention = attention.writesOff || attention.relink.length > 0;
-	const flag = attention.writesOff ? "Writes off" : attention.relink.length ? "Re-link needed" : "";
+	const otherOff = attention.switchesOff?.length ?? 0;
+	const needsAttention = attention.writesOff || otherOff > 0 || attention.relink.length > 0;
+	const flag = attention.writesOff
+		? "Writes off"
+		: otherOff
+			? "Feature off"
+			: attention.relink.length
+				? "Re-link needed"
+				: "";
 	const size = variant === "row" ? 22 : 32;
 	const avatar = `<span class="avatar-wrap"><span class="avatar avatar-${size}" aria-hidden="true">${escapeHtml(
 		session.email.trim().charAt(0).toUpperCase() || "?",
