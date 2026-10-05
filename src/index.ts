@@ -40,6 +40,11 @@ function createProvider(env: Env) {
 		authorizeEndpoint: "/authorize",
 		clientRegistrationEndpoint: "/register",
 		defaultHandler: GoogleHandler as any,
+		// Replace the library's default error log (which includes a free-text
+		// description) with status + error code only.
+		onError({ code, status }) {
+			console.warn(`oauth error: status=${status} code=${code}`);
+		},
 		// Tokens are audience-bound to this environment's own /mcp URL.
 		resourceMetadata: {
 			resource: `${env.BASE_URL}/mcp`,
