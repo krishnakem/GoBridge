@@ -14,8 +14,9 @@ export default defineConfig({
 					GOOGLE_CLIENT_ID: "test-google-client-id",
 					GOOGLE_CLIENT_SECRET: "test-google-client-secret",
 					ALLOWED_EMAIL: "owner@example.com",
-					COOKIE_ENCRYPTION_KEY: "test-cookie-key",
-					TOKEN_ENCRYPTION_KEY: "test-token-key",
+					COOKIE_ENCRYPTION_KEY: "test-cookie-key-not-a-real-secret-0000",
+					// 64 hex zeros: a valid key shape that is obviously not a real key.
+					TOKEN_ENCRYPTION_KEY: "0".repeat(64),
 				},
 			},
 		}),

@@ -2,6 +2,8 @@ import type { AuthRequest, OAuthHelpers } from "@cloudflare/workers-oauth-provid
 import { Hono } from "hono";
 import { verifyOwner } from "./auth";
 import { renderMessagePage } from "./html";
+import { LinkHandler } from "./link-handler";
+import { finishOwnerLogin, OWNER_LOGIN_STATE_PREFIX } from "./session";
 import {
 	fetchGoogleIdentityClaims,
 	getUpstreamAuthorizeUrl,
@@ -142,6 +144,11 @@ async function redirectToGoogle(
  * to ALLOWED_EMAIL. Anyone else is rejected and NO grant or token is issued.
  */
 app.get("/callback", async (c) => {
+	// Owner-page logins (for /link) share this redirect URI but never create an MCP grant.
+	if (c.req.query("state")?.startsWith(OWNER_LOGIN_STATE_PREFIX)) {
+		return finishOwnerLogin(c.req.raw, c.env);
+	}
+
 	let oauthReqInfo: AuthRequest;
 	let clearSessionCookie: string;
 
@@ -210,5 +217,8 @@ app.get("/callback", async (c) => {
 	headers.set("Location", redirectTo);
 	return new Response(null, { status: 302, headers });
 });
+
+// Owner-only pages: /link, /link/callback, /link/unlink
+app.route("/", LinkHandler);
 
 export { app as GoogleHandler };
