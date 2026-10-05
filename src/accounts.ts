@@ -8,6 +8,8 @@ import { decryptSecret, encryptSecret } from "./crypto";
 export const ALIAS_PATTERN = /^[a-z0-9](?:[a-z0-9-]{0,30}[a-z0-9])?$/;
 
 const KEY_PREFIX = "account:";
+/** Marker written when Google stops accepting an account's refresh token. */
+const RELINK_PREFIX = "relink:";
 
 type StoredAccount = {
 	v: 1;
@@ -81,6 +83,19 @@ export async function saveAccount(
 		v: 1,
 	};
 	await env.GOOGLE_TOKENS.put(`${KEY_PREFIX}${account.alias}`, JSON.stringify(record));
+	await env.GOOGLE_TOKENS.delete(`${RELINK_PREFIX}${account.alias}`);
+}
+
+/** Remembers that this account must be linked again (shown on the owner pages). */
+export async function markNeedsRelink(env: Env, alias: string): Promise<void> {
+	if (!ALIAS_PATTERN.test(alias)) return;
+	await env.GOOGLE_TOKENS.put(`${RELINK_PREFIX}${alias}`, new Date().toISOString());
+}
+
+/** Aliases flagged as needing a re-link. Linking again or unlinking clears the flag. */
+export async function aliasesNeedingRelink(env: Env): Promise<string[]> {
+	const page = await env.GOOGLE_TOKENS.list({ prefix: RELINK_PREFIX });
+	return page.keys.map((key) => key.name.slice(RELINK_PREFIX.length)).sort();
 }
 
 /** Decrypts the stored refresh token. For server-side Google calls only. */
@@ -93,4 +108,5 @@ export async function getRefreshToken(env: Env, alias: string): Promise<string |
 export async function deleteAccount(env: Env, alias: string): Promise<void> {
 	if (!ALIAS_PATTERN.test(alias)) return;
 	await env.GOOGLE_TOKENS.delete(`${KEY_PREFIX}${alias}`);
+	await env.GOOGLE_TOKENS.delete(`${RELINK_PREFIX}${alias}`);
 }

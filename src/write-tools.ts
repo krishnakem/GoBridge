@@ -7,7 +7,8 @@
  * Google is recorded in the audit log, without bodies.
  *
  * Deliberately NOT implemented: direct send, forwarding, filters, settings,
- * vacation responder, delegation, permanent deletion.
+ * vacation responder, delegation, permanent deletion of messages. The only
+ * delete is delete_draft, which can remove an unsent draft and nothing else.
  */
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { z } from "zod";
@@ -21,7 +22,15 @@ import {
 	reserveDailySend,
 	writesEnabled,
 } from "./guardrails";
-import { account, calendarId, cap, failure, googleId, type ToolResult } from "./read-tools";
+import {
+	account,
+	calendarId,
+	cap,
+	failure,
+	googleId,
+	type ToolResult,
+	untrusted,
+} from "./read-tools";
 import type { Props } from "./utils";
 
 const GMAIL = "https://gmail.googleapis.com/gmail/v1/users/me";
@@ -61,8 +70,28 @@ const labelIds = z
 	.max(WRITE_LIMITS.labelIds)
 	.default([]);
 const eventTime = z
-	.union([z.iso.datetime({ offset: true }), z.iso.date()])
-	.describe("RFC 3339 time with offset (2026-10-05T10:00:00-07:00), or YYYY-MM-DD for an all-day event");
+	.union([z.iso.datetime({ local: true, offset: true }), z.iso.date()])
+	.describe(
+		"Date and time, read in `timeZone` unless it carries its own offset (2026-10-05T10:00:00 or 2026-10-05T10:00:00-04:00), or YYYY-MM-DD for an all-day event",
+	);
+
+export const DEFAULT_TIME_ZONE = "America/Detroit";
+
+function isTimeZone(value: string): boolean {
+	try {
+		new Intl.DateTimeFormat("en-US", { timeZone: value });
+		return true;
+	} catch (_e) {
+		return false;
+	}
+}
+
+const timeZone = z
+	.string()
+	.max(64)
+	.refine(isTimeZone, "must be an IANA time zone such as America/Detroit")
+	.default(DEFAULT_TIME_ZONE)
+	.describe(`IANA time zone for start and end; defaults to ${DEFAULT_TIME_ZONE}`);
 const sendUpdates = z
 	.enum(["none", "all"])
 	.default("none")
@@ -79,11 +108,26 @@ const draftFields = {
 	replyToMessageId: googleId("Gmail message id to reply to").optional(),
 };
 
-function checkRecipientTotal(args: { to: string[]; cc: string[]; bcc: string[] }) {
-	if (args.to.length + args.cc.length + args.bcc.length > WRITE_LIMITS.recipients) {
+/**
+ * Server-side limit, enforced inside the tools themselves and not only by the
+ * input schema: at most 20 recipients in total across to, cc and bcc.
+ */
+export function assertRecipientLimit(args: { to?: unknown[]; cc?: unknown[]; bcc?: unknown[] }) {
+	const total = (args.to?.length ?? 0) + (args.cc?.length ?? 0) + (args.bcc?.length ?? 0);
+	if (total > WRITE_LIMITS.recipients) {
 		throw new ToolError(
 			"invalid_input",
 			`Invalid input: at most ${WRITE_LIMITS.recipients} recipients in total (to + cc + bcc).`,
+		);
+	}
+}
+
+/** Server-side limit: at most 50 message ids per modify_labels call. */
+export function assertLabelBatchLimit(messageIdList: unknown[]) {
+	if (messageIdList.length > WRITE_LIMITS.labelMessageIds) {
+		throw new ToolError(
+			"invalid_input",
+			`Invalid input: at most ${WRITE_LIMITS.labelMessageIds} message ids per call.`,
 		);
 	}
 }
@@ -156,6 +200,7 @@ async function replyThreading(env: Env, alias: string, messageId: string): Promi
 		env,
 		alias,
 		`${GMAIL}/messages/${encodeURIComponent(messageId)}?format=metadata&metadataHeaders=Message-ID&metadataHeaders=References`,
+		{ what: "replyToMessageId (message id)" },
 	);
 	const [inReplyTo] = messageIds(headerOf(original, "Message-ID"));
 	const references = [...messageIds(headerOf(original, "References")), ...(inReplyTo ? [inReplyTo] : [])]
@@ -194,7 +239,33 @@ const ADDRESS = /[^\s<>,;:"()]+@[^\s<>,;:"()]+/g;
 
 // ---------- Calendar helpers ----------
 
-const toEventTime = (value: string) => (value.length === 10 ? { date: value } : { dateTime: value });
+const toEventTime = (value: string, zone: string) =>
+	value.length === 10 ? { date: value } : { dateTime: value, timeZone: zone };
+
+const hasOffset = (value: string) => /(Z|[+-]\d{2}:\d{2})$/.test(value);
+
+/** Renders an instant as local time in `zone`, with that zone's UTC offset. */
+export function formatInZone(value: unknown, zone: string): string | undefined {
+	if (typeof value !== "string") return undefined;
+	const instant = Date.parse(value);
+	if (Number.isNaN(instant)) return value.slice(0, 40);
+	const parts: Record<string, string> = {};
+	const formatter = new Intl.DateTimeFormat("en-CA", {
+		day: "2-digit",
+		hour: "2-digit",
+		hourCycle: "h23",
+		minute: "2-digit",
+		month: "2-digit",
+		second: "2-digit",
+		timeZone: zone,
+		year: "numeric",
+	});
+	for (const part of formatter.formatToParts(new Date(instant))) parts[part.type] = part.value;
+	const local = `${parts.year}-${parts.month}-${parts.day}T${parts.hour}:${parts.minute}:${parts.second}`;
+	const offset = Math.round((Date.parse(`${local}Z`) - Math.floor(instant / 1000) * 1000) / 60_000);
+	const pad = (n: number) => String(Math.floor(n)).padStart(2, "0");
+	return `${local}${offset < 0 ? "-" : "+"}${pad(Math.abs(offset) / 60)}:${pad(Math.abs(offset) % 60)}`;
+}
 
 function checkEventTimes(start?: string, end?: string) {
 	if (!start || !end) return;
@@ -204,7 +275,8 @@ function checkEventTimes(start?: string, end?: string) {
 			"Invalid input: start and end must both be times or both be dates.",
 		);
 	}
-	if (Date.parse(end) < Date.parse(start)) {
+	// A time without an offset is read in the event's time zone, so only compare like with like.
+	if (hasOffset(start) === hasOffset(end) && Date.parse(end) < Date.parse(start)) {
 		throw new ToolError("invalid_input", "Invalid input: end must not be before start.");
 	}
 }
@@ -216,14 +288,17 @@ function eventUrl(calendar: string, eventId: string | null, notify: string): str
 
 type CalendarEvent = Record<string, any>;
 
-function eventResult(event: CalendarEvent, notify: string) {
+const EVENT_ID = "event id (or calendar id)";
+
+function eventResult(event: CalendarEvent, notify: string, zone: string = DEFAULT_TIME_ZONE) {
 	const guests: any[] = Array.isArray(event.attendees) ? event.attendees : [];
 	return {
 		eventId: event.id,
-		summary: cap(event.summary, WRITE_LIMITS.summaryChars),
-		start: event.start?.dateTime ?? event.start?.date,
-		end: event.end?.dateTime ?? event.end?.date,
-		location: cap(event.location, WRITE_LIMITS.locationChars),
+		summary: untrusted("calendar", cap(event.summary, WRITE_LIMITS.summaryChars)),
+		start: formatInZone(event.start?.dateTime, zone) ?? event.start?.date,
+		end: formatInZone(event.end?.dateTime, zone) ?? event.end?.date,
+		timeZone: zone,
+		location: untrusted("calendar", cap(event.location, WRITE_LIMITS.locationChars)),
 		attendees: guests.slice(0, 50).map((a) => ({ email: a?.email, responseStatus: a?.responseStatus })),
 		htmlLink: event.htmlLink,
 		attendeesEmailed: notify === "all",
@@ -254,7 +329,7 @@ export const WRITE_TOOLS: WriteTool[] = [
 		destructive: false,
 		schema: z.object(draftFields),
 		run: async (env, args, audit) => {
-			checkRecipientTotal(args);
+			assertRecipientLimit(args);
 			audit.recipients = [...args.to, ...args.cc, ...args.bcc];
 			audit.subject = args.subject;
 			const threading = args.replyToMessageId
@@ -276,7 +351,7 @@ export const WRITE_TOOLS: WriteTool[] = [
 		destructive: true,
 		schema: z.object({ ...draftFields, draftId: googleId("Gmail draft id") }),
 		run: async (env, args, audit) => {
-			checkRecipientTotal(args);
+			assertRecipientLimit(args);
 			audit.draftId = args.draftId;
 			audit.recipients = [...args.to, ...args.cc, ...args.bcc];
 			audit.subject = args.subject;
@@ -290,6 +365,7 @@ export const WRITE_TOOLS: WriteTool[] = [
 					env,
 					args.account,
 					`${draftUrl}?format=metadata&metadataHeaders=In-Reply-To&metadataHeaders=References`,
+					{ what: "draft id" },
 				);
 				const [inReplyTo] = messageIds(headerOf(existing.message, "In-Reply-To"));
 				threading = inReplyTo
@@ -305,6 +381,7 @@ export const WRITE_TOOLS: WriteTool[] = [
 			const draft = await googleJson<DraftResponse>(env, args.account, draftUrl, {
 				json: draftRequest(args, threading),
 				method: "PUT",
+				what: "draft id",
 			});
 			return draftPreview(draft, args, Boolean(threading.inReplyTo));
 		},
@@ -322,6 +399,7 @@ export const WRITE_TOOLS: WriteTool[] = [
 				env,
 				args.account,
 				`${GMAIL}/drafts/${encodeURIComponent(args.draftId)}?format=metadata&metadataHeaders=To&metadataHeaders=Cc&metadataHeaders=Bcc&metadataHeaders=Subject`,
+				{ what: "draft id" },
 			);
 			const to = ["To", "Cc", "Bcc"].flatMap(
 				(name) => headerOf(draft.message, name).match(ADDRESS) ?? [],
@@ -342,7 +420,7 @@ export const WRITE_TOOLS: WriteTool[] = [
 				env,
 				args.account,
 				`${GMAIL}/drafts/send`,
-				{ json: { id: args.draftId }, method: "POST" },
+				{ json: { id: args.draftId }, method: "POST", what: "draft id" },
 			);
 			return {
 				sent: true,
@@ -351,6 +429,40 @@ export const WRITE_TOOLS: WriteTool[] = [
 				recipients: to,
 				subject: cap(audit.subject, WRITE_LIMITS.subjectChars),
 			};
+		},
+	}),
+
+	tool({
+		name: "delete_draft",
+		title: "Delete a Gmail draft",
+		description: `Permanently deletes ONE unsent Gmail draft. It only works on drafts: it can never delete a sent or received message. ${CONFIRM} ${UNTRUSTED}`,
+		destructive: true,
+		schema: z.object({ account, draftId: googleId("Gmail draft id (from create_draft or list_drafts)") }),
+		run: async (env, args, audit) => {
+			audit.draftId = args.draftId;
+			const draftUrl = `${GMAIL}/drafts/${encodeURIComponent(args.draftId)}`;
+			// Look it up as a draft first: a message id, or anything not in Drafts, is refused.
+			const draft = await googleJson<{
+				id?: string;
+				message?: GmailHeaders & { labelIds?: string[] };
+			}>(
+				env,
+				args.account,
+				`${draftUrl}?format=metadata&metadataHeaders=To&metadataHeaders=Cc&metadataHeaders=Bcc&metadataHeaders=Subject`,
+				{ what: "draft id" },
+			);
+			const labels = draft.message?.labelIds;
+			if (draft.id !== args.draftId || !Array.isArray(labels) || !labels.includes("DRAFT")) {
+				throw new ToolError("invalid_input", "That id is not an unsent draft. Nothing was deleted.");
+			}
+			audit.recipients = ["To", "Cc", "Bcc"].flatMap(
+				(name) => headerOf(draft.message, name).match(ADDRESS) ?? [],
+			);
+			audit.subject = headerOf(draft.message, "Subject");
+			await googleRequest(env, args.account, draftUrl, { method: "DELETE", what: "draft id" }).then(
+				(resp) => resp.body?.cancel(),
+			);
+			return { deleted: true, draftId: args.draftId };
 		},
 	}),
 
@@ -369,6 +481,7 @@ export const WRITE_TOOLS: WriteTool[] = [
 			removeLabelIds: labelIds,
 		}),
 		run: async (env, args, audit) => {
+			assertLabelBatchLimit(args.messageIds);
 			if (args.addLabelIds.length + args.removeLabelIds.length === 0) {
 				throw new ToolError("invalid_input", "Invalid input: give at least one label to add or remove.");
 			}
@@ -388,6 +501,7 @@ export const WRITE_TOOLS: WriteTool[] = [
 					removeLabelIds: args.removeLabelIds,
 				},
 				method: "POST",
+				what: "message ids or label ids",
 			}).then((resp) => resp.body?.cancel());
 			return {
 				modified: args.messageIds.length,
@@ -409,7 +523,7 @@ export const WRITE_TOOLS: WriteTool[] = [
 				env,
 				args.account,
 				`${GMAIL}/messages/${encodeURIComponent(args.messageId)}/trash`,
-				{ method: "POST" },
+				{ method: "POST", what: "message id" },
 			).then((resp) => resp.body?.cancel());
 			return { trashed: true, messageId: args.messageId };
 		},
@@ -426,6 +540,7 @@ export const WRITE_TOOLS: WriteTool[] = [
 			summary: singleLine(WRITE_LIMITS.summaryChars).min(1),
 			start: eventTime,
 			end: eventTime,
+			timeZone,
 			description: z.string().max(WRITE_LIMITS.descriptionChars).optional(),
 			location: singleLine(WRITE_LIMITS.locationChars).optional(),
 			attendees: attendees.optional(),
@@ -444,16 +559,17 @@ export const WRITE_TOOLS: WriteTool[] = [
 					json: {
 						attendees: args.attendees?.map((address) => ({ email: address })),
 						description: args.description,
-						end: toEventTime(args.end),
+						end: toEventTime(args.end, args.timeZone),
 						location: args.location,
-						start: toEventTime(args.start),
+						start: toEventTime(args.start, args.timeZone),
 						summary: args.summary,
 					},
 					method: "POST",
+					what: "calendar id",
 				},
 			);
 			audit.eventId = event.id;
-			return eventResult(event, args.sendUpdates);
+			return eventResult(event, args.sendUpdates, args.timeZone);
 		},
 	}),
 
@@ -469,6 +585,7 @@ export const WRITE_TOOLS: WriteTool[] = [
 			summary: singleLine(WRITE_LIMITS.summaryChars).min(1).optional(),
 			start: eventTime.optional(),
 			end: eventTime.optional(),
+			timeZone,
 			description: z.string().max(WRITE_LIMITS.descriptionChars).optional(),
 			location: singleLine(WRITE_LIMITS.locationChars).optional(),
 			attendees: attendees.optional(),
@@ -482,9 +599,9 @@ export const WRITE_TOOLS: WriteTool[] = [
 			const changes: Record<string, unknown> = {
 				attendees: args.attendees?.map((address) => ({ email: address })),
 				description: args.description,
-				end: args.end ? toEventTime(args.end) : undefined,
+				end: args.end ? toEventTime(args.end, args.timeZone) : undefined,
 				location: args.location,
-				start: args.start ? toEventTime(args.start) : undefined,
+				start: args.start ? toEventTime(args.start, args.timeZone) : undefined,
 				summary: args.summary,
 			};
 			if (Object.values(changes).every((value) => value === undefined)) {
@@ -494,10 +611,10 @@ export const WRITE_TOOLS: WriteTool[] = [
 				env,
 				args.account,
 				eventUrl(args.calendarId, args.eventId, args.sendUpdates),
-				{ json: changes, method: "PATCH" },
+				{ json: changes, method: "PATCH", what: EVENT_ID },
 			);
 			audit.summary = event.summary;
-			return eventResult(event, args.sendUpdates);
+			return eventResult(event, args.sendUpdates, args.timeZone);
 		},
 	}),
 
@@ -516,18 +633,19 @@ export const WRITE_TOOLS: WriteTool[] = [
 				env,
 				args.account,
 				eventUrl(args.calendarId, args.eventId, "none").split("?")[0],
+				{ what: EVENT_ID },
 			);
 			audit.summary = event.summary;
 			await googleRequest(
 				env,
 				args.account,
 				eventUrl(args.calendarId, args.eventId, args.sendUpdates),
-				{ method: "DELETE" },
+				{ method: "DELETE", what: EVENT_ID },
 			).then((resp) => resp.body?.cancel());
 			return {
 				deleted: true,
 				eventId: args.eventId,
-				summary: cap(event.summary, WRITE_LIMITS.summaryChars),
+				summary: untrusted("calendar", cap(event.summary, WRITE_LIMITS.summaryChars)),
 				attendeesEmailed: args.sendUpdates === "all",
 			};
 		},
@@ -550,7 +668,9 @@ export const WRITE_TOOLS: WriteTool[] = [
 			audit.response = args.response;
 			audit.sendUpdates = "none";
 			const url = eventUrl(args.calendarId, args.eventId, "none");
-			const event = await googleJson<CalendarEvent>(env, args.account, url.split("?")[0]);
+			const event = await googleJson<CalendarEvent>(env, args.account, url.split("?")[0], {
+				what: EVENT_ID,
+			});
 			audit.summary = event.summary;
 			const guests: any[] = Array.isArray(event.attendees) ? event.attendees : [];
 			if (!guests.some((guest) => guest?.self === true)) {
@@ -566,6 +686,7 @@ export const WRITE_TOOLS: WriteTool[] = [
 					),
 				},
 				method: "PATCH",
+				what: EVENT_ID,
 			});
 			return { ...eventResult(updated, "none"), response: args.response };
 		},

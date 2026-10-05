@@ -34,10 +34,27 @@ async function increment(env: Env, key: string, limit: number, ttl: number): Pro
 	return true;
 }
 
+const rateKey = (alias: string) => `rate:${alias}:${Math.floor(Date.now() / 3_600_000)}`;
+const sendCapKey = (alias: string) => `sendcap:${alias}:${new Date().toISOString().slice(0, 10)}`;
+
+/** Read-only view of an account's counters, for the /settings page. */
+export async function writeUsage(
+	env: Env,
+	alias: string,
+): Promise<{ sendsToday: number; writesThisHour: number }> {
+	const [sends, writes] = await Promise.all([
+		env.AUDIT_LOG.get(sendCapKey(alias)),
+		env.AUDIT_LOG.get(rateKey(alias)),
+	]);
+	return {
+		sendsToday: Number.parseInt(sends ?? "0", 10) || 0,
+		writesThisHour: Number.parseInt(writes ?? "0", 10) || 0,
+	};
+}
+
 /** Counts one write-tool call for this account; throws once the hourly limit is reached. */
 export async function enforceWriteRateLimit(env: Env, alias: string): Promise<void> {
-	const hour = Math.floor(Date.now() / 3_600_000);
-	if (!(await increment(env, `rate:${alias}:${hour}`, WRITE_RATE_LIMIT_PER_HOUR, 2 * 3600))) {
+	if (!(await increment(env, rateKey(alias), WRITE_RATE_LIMIT_PER_HOUR, 2 * 3600))) {
 		throw new ToolError(
 			"rate_limited",
 			`Rate limit reached: at most ${WRITE_RATE_LIMIT_PER_HOUR} write actions per account per hour. Try again later.`,
@@ -51,8 +68,7 @@ export async function enforceWriteRateLimit(env: Env, alias: string): Promise<vo
  */
 export async function reserveDailySend(env: Env, alias: string): Promise<void> {
 	const cap = dailySendCap(env);
-	const day = new Date().toISOString().slice(0, 10);
-	if (!(await increment(env, `sendcap:${alias}:${day}`, cap, 2 * 24 * 3600))) {
+	if (!(await increment(env, sendCapKey(alias), cap, 2 * 24 * 3600))) {
 		throw new ToolError(
 			"send_cap_reached",
 			`Daily send cap reached: at most ${cap} emails per account per day. Nothing was sent.`,
