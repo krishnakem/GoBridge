@@ -25,3 +25,7 @@ dist/
 # Owner-only review documents — keep local, like SPEC.md
 SECURITY_REVIEW.md
 PROD_CHECKLIST.md
+
+# Markdown files stay local (rules, specs, reviews). README.md is the one exception.
+*.md
+!README.md
