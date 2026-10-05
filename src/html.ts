@@ -15,8 +15,13 @@ export const HTML_SECURITY_HEADERS: Record<string, string> = {
 };
 
 /** Links between the owner-only pages. */
-export const OWNER_NAV =
-	'<p class="muted"><a href="/link">Linked accounts</a> · <a href="/audit">Recent writes</a> · <a href="/clients">AI clients</a></p>';
+export function ownerNav(csrfToken: string): string {
+	return `<form class="inline muted" method="post" action="/logout">
+<a href="/link">Linked accounts</a> · <a href="/audit">Recent writes</a> · <a href="/clients">AI clients</a> ·
+<input type="hidden" name="csrf_token" value="${sanitizeText(csrfToken)}">
+<button type="submit">Sign out</button>
+</form>`;
+}
 
 /** Escapes text for use in HTML content or attribute values. */
 export const escapeHtml = sanitizeText;

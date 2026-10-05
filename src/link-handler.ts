@@ -25,7 +25,7 @@ import {
 	LINK_SCOPES,
 	revokeGoogleToken,
 } from "./google";
-import { escapeHtml, OWNER_NAV, renderMessagePage, renderPage } from "./html";
+import { escapeHtml, ownerNav, renderMessagePage, renderPage } from "./html";
 import { hasValidCsrf, type OwnerSession, readOwnerSession, startOwnerLogin } from "./session";
 
 const LINK_STATE_TTL_SECONDS = 600;
@@ -120,7 +120,7 @@ ${table}
 </form>
 <p class="muted">Lowercase letters, numbers and hyphens only. On Google's screen, leave every permission ticked: GoBridge refuses a partial grant.</p>
 <p class="muted">Signed in as ${escapeHtml(session.email)}.</p>
-${OWNER_NAV}`,
+${ownerNav(session.csrf)}`,
 	);
 }
 

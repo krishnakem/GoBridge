@@ -4,6 +4,7 @@
  *   GET  /audit           recent writes and which AI client made them
  *   GET  /clients         registered AI clients and their active grants
  *   POST /clients/revoke  revoke one client's grants + registration (session + CSRF)
+ *   POST /logout          end the owner session (session + CSRF); other methods get 405
  *
  * Like /link: no content without an owner session, and the only state-changing
  * action is POST-only with a CSRF token.
@@ -11,9 +12,9 @@
 import type { ClientInfo, GrantSummary, OAuthHelpers } from "@cloudflare/workers-oauth-provider";
 import { Hono } from "hono";
 import { type AuditEntry, listAudit } from "./guardrails";
-import { escapeHtml, OWNER_NAV, renderMessagePage, renderPage } from "./html";
+import { escapeHtml, ownerNav, renderMessagePage, renderPage } from "./html";
 import { requireOwnerPost } from "./link-handler";
-import { readOwnerSession, startOwnerLogin } from "./session";
+import { endOwnerSession, readOwnerSession, startOwnerLogin } from "./session";
 
 const app = new Hono<{ Bindings: Env & { OAUTH_PROVIDER: OAuthHelpers } }>();
 
@@ -63,7 +64,7 @@ ${rows}
 <p class="muted">The 100 most recent write actions. Entries are kept for 90 days and never contain message or event bodies.</p>
 ${table}
 <p class="muted">Signed in as ${escapeHtml(session.email)}.</p>
-${OWNER_NAV}`,
+${ownerNav(session.csrf)}`,
 	);
 });
 
@@ -146,7 +147,7 @@ ${rows}
 <p class="muted">Every app that has registered with GoBridge. Names are chosen by the app itself. Revoking a client cancels its tokens and removes its registration; other clients keep working. To use it again, add GoBridge in that app again.</p>
 ${table}
 <p class="muted">Signed in as ${escapeHtml(session.email)}.</p>
-${OWNER_NAV}`,
+${ownerNav(session.csrf)}`,
 	);
 });
 
@@ -175,5 +176,24 @@ app.post("/clients/revoke", async (c) => {
 	console.log(`${route} ok: client=${client.clientId}`);
 	return c.redirect("/clients?msg=revoked", 303);
 });
+
+app.post("/logout", async (c) => {
+	const route = "POST /logout";
+	const gate = await requireOwnerPost(c as any, route);
+	if (gate instanceof Response) return gate;
+
+	const headers = new Headers({ "Set-Cookie": await endOwnerSession(c.env, gate.session) });
+	console.log(`${route} ok`);
+	// Rendered here rather than on a separate page, so no new unauthenticated route exists.
+	return renderMessagePage(
+		"Signed out",
+		"You are signed out of GoBridge on this browser. AI clients you connected keep working; revoke them on the AI clients page if needed.",
+		200,
+		headers,
+	);
+});
+
+// Signing out must never happen from a link, image, or prefetch.
+app.all("/logout", (c) => c.text("Method not allowed", 405, { Allow: "POST" }));
 
 export { app as OwnerPages };

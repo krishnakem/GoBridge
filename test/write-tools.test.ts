@@ -878,3 +878,115 @@ describe("owner pages and client revocation", () => {
 		expect(unknown.status).toBe(404);
 	});
 });
+
+describe("owner sign-out", () => {
+	const BASE_URL = "https://gobridge.test";
+	const PAGES = ["/link", "/audit", "/clients"];
+	const cookiesFrom = (res: Response) =>
+		res.headers
+			.getSetCookie()
+			.map((c) => c.split(";")[0])
+			.filter((c) => !c.endsWith("="))
+			.join("; ");
+
+	async function signIn() {
+		const start = await SELF.fetch(`${BASE_URL}/link`, { redirect: "manual" });
+		const google = new URL(start.headers.get("Location")!);
+		const callback = await SELF.fetch(
+			`${BASE_URL}/callback?code=fake-login-code&state=${google.searchParams.get("state")}`,
+			{ redirect: "manual", headers: { Cookie: cookiesFrom(start) } },
+		);
+		const sessionCookie = callback.headers
+			.getSetCookie()
+			.find((c) => c.startsWith("__Host-GOBRIDGE_SESSION="))!;
+		const cookie = cookiesFrom(callback);
+		const page = await SELF.fetch(`${BASE_URL}/link`, { headers: { Cookie: cookie } });
+		const html = await page.text();
+		return { cookie, csrf: html.match(/name="csrf_token" value="([^"]+)"/)![1], html, sessionCookie };
+	}
+
+	const get = (path: string, cookie: string) =>
+		SELF.fetch(`${BASE_URL}${path}`, { redirect: "manual", headers: { Cookie: cookie } });
+
+	function logout(cookie: string | null, fields: Record<string, string>) {
+		return SELF.fetch(`${BASE_URL}/logout`, {
+			method: "POST",
+			redirect: "manual",
+			headers: {
+				"Content-Type": "application/x-www-form-urlencoded",
+				...(cookie ? { Cookie: cookie } : {}),
+			},
+			body: new URLSearchParams(fields).toString(),
+		});
+	}
+
+	async function expectSignedIn(cookie: string) {
+		for (const page of PAGES) expect((await get(page, cookie)).status, page).toBe(200);
+	}
+
+	it("gives the session cookie a 2-hour maximum lifetime and shows Sign out on every owner page", async () => {
+		mockGoogle();
+		const owner = await signIn();
+		expect(owner.sessionCookie).toContain("Max-Age=7200");
+		for (const flag of ["HttpOnly", "Secure", "Path=/", "SameSite=Lax"]) {
+			expect(owner.sessionCookie).toContain(flag);
+		}
+		for (const page of PAGES) {
+			const html = await (await get(page, owner.cookie)).text();
+			expect(html, page).toContain('action="/logout"');
+			expect(html).toContain("Sign out");
+		}
+	});
+
+	it("rejects logout without a valid CSRF token and keeps the session", async () => {
+		mockGoogle();
+		const owner = await signIn();
+		expect((await logout(owner.cookie, {})).status).toBe(403);
+		expect((await logout(owner.cookie, { csrf_token: "wrong" })).status).toBe(403);
+		expect((await logout(null, { csrf_token: owner.csrf })).status).toBe(403);
+		await expectSignedIn(owner.cookie);
+	});
+
+	it("does not sign out on GET (405) or any other method", async () => {
+		mockGoogle();
+		const owner = await signIn();
+		const res = await get("/logout", owner.cookie);
+		expect(res.status).toBe(405);
+		expect(res.headers.get("Allow")).toBe("POST");
+		expect(res.headers.getSetCookie()).toHaveLength(0);
+		const put = await SELF.fetch(`${BASE_URL}/logout`, { method: "PUT", headers: { Cookie: owner.cookie } });
+		expect(put.status).toBe(405);
+		await expectSignedIn(owner.cookie);
+	});
+
+	it("signs out: expires the cookie and makes the old cookie useless everywhere", async () => {
+		mockGoogle();
+		const owner = await signIn();
+		const other = await signIn(); // a second browser stays signed in
+		await expectSignedIn(owner.cookie);
+
+		const res = await logout(owner.cookie, { csrf_token: owner.csrf });
+		expect(res.status).toBe(200);
+		expect(await res.text()).toContain("Signed out");
+		expect(res.headers.get("X-Frame-Options")).toBe("DENY");
+		const cleared = res.headers.getSetCookie().find((c) => c.startsWith("__Host-GOBRIDGE_SESSION="))!;
+		expect(cleared).toBe("__Host-GOBRIDGE_SESSION=; HttpOnly; Secure; Path=/; SameSite=Lax; Max-Age=0");
+
+		// Replaying the old cookie: no page content, no state changes.
+		for (const page of PAGES) {
+			const replay = await get(page, owner.cookie);
+			expect(replay.status, page).toBe(302);
+			expect(new URL(replay.headers.get("Location")!).hostname).toBe("accounts.google.com");
+		}
+		const revoke = await SELF.fetch(`${BASE_URL}/clients/revoke`, {
+			method: "POST",
+			headers: { "Content-Type": "application/x-www-form-urlencoded", Cookie: owner.cookie },
+			body: new URLSearchParams({ client_id: "x", csrf_token: owner.csrf }).toString(),
+		});
+		expect(revoke.status).toBe(403);
+		expect((await logout(owner.cookie, { csrf_token: owner.csrf })).status).toBe(403);
+
+		await expectSignedIn(other.cookie);
+		expect(allLogOutput()).not.toContain("owner@example.com");
+	});
+});

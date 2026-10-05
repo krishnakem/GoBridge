@@ -1,9 +1,10 @@
 /**
  * Owner browser session for the owner-only pages (/link, later /audit and /clients).
  *
- * The session lives in an encrypted + authenticated cookie. It is created only
- * after the same Google login + allowlist check that protects MCP grants, and it
- * is re-checked against ALLOWED_EMAIL on every request.
+ * The session lives in an encrypted + authenticated cookie, backed by a record
+ * in OAUTH_KV that sign-out deletes. It is created only after the same Google
+ * login + allowlist check that protects MCP grants, and it is re-checked against
+ * ALLOWED_EMAIL and that record on every request.
  */
 import { isAllowedEmail, verifyOwner } from "./auth";
 import { randomToken, safeEqual, seal, sha256Base64Url, unseal } from "./crypto";
@@ -13,6 +14,7 @@ import { fetchGoogleIdentityClaims, getUpstreamAuthorizeUrl, OWNER_LOGIN_SCOPES 
 const SESSION_COOKIE = "__Host-GOBRIDGE_SESSION";
 const LOGIN_STATE_COOKIE = "__Host-GOBRIDGE_LOGIN_STATE";
 const SESSION_PURPOSE = "owner-session";
+/** Maximum lifetime of an owner session: 2 hours, then the owner signs in again. */
 const SESSION_TTL_SECONDS = 2 * 60 * 60;
 const LOGIN_STATE_TTL_SECONDS = 600;
 
@@ -24,6 +26,8 @@ const OWNER_PAGES = ["/link", "/audit", "/clients"] as const;
 type OwnerPage = (typeof OWNER_PAGES)[number];
 
 export type OwnerSession = {
+	/** Id of the server-side session record; signing out deletes that record. */
+	sid: string;
 	email: string;
 	sub: string;
 	/** Per-session CSRF token; must accompany every state-changing POST. */
@@ -53,7 +57,22 @@ export async function readOwnerSession(request: Request, env: Env): Promise<Owne
 	if (!session || typeof session.exp !== "number" || typeof session.csrf !== "string") return null;
 	if (session.exp <= Math.floor(Date.now() / 1000)) return null;
 	if (!isAllowedEmail(session.email, env.ALLOWED_EMAIL)) return null;
+	// The cookie alone is not enough: its server-side record must still exist,
+	// so a cookie copied before sign-out cannot be replayed.
+	if (typeof session.sid !== "string" || !session.sid) return null;
+	if (!(await env.OAUTH_KV.get(sessionKey(session.sid)))) return null;
 	return session;
+}
+
+const sessionKey = (sid: string) => `owner:session:${sid}`;
+
+/**
+ * Signs the owner out: deletes the server-side session record and returns the
+ * Set-Cookie value that expires the session cookie (same name, path and flags).
+ */
+export async function endOwnerSession(env: Env, session: OwnerSession): Promise<string> {
+	await env.OAUTH_KV.delete(sessionKey(session.sid));
+	return cookie(SESSION_COOKIE, "", 0);
 }
 
 /** True only when the form's token matches this session's CSRF token. */
@@ -159,8 +178,10 @@ export async function finishOwnerLogin(request: Request, env: Env): Promise<Resp
 		csrf: randomToken(),
 		email: owner.email,
 		exp: Math.floor(Date.now() / 1000) + SESSION_TTL_SECONDS,
+		sid: randomToken(),
 		sub: owner.sub,
 	};
+	await env.OAUTH_KV.put(sessionKey(session.sid), "1", { expirationTtl: SESSION_TTL_SECONDS });
 	headers.append(
 		"Set-Cookie",
 		cookie(
