@@ -119,14 +119,14 @@
 				]
 			},
 			"kv_namespaces": [
-				{ "binding": "OAUTH_KV", "id": "REPLACE_WITH_PROD_OAUTH_KV_ID" },
-				{ "binding": "GOOGLE_TOKENS", "id": "REPLACE_WITH_PROD_GOOGLE_TOKENS_ID" }
+				{ "binding": "OAUTH_KV", "id": "a8f32e217e6f44648351315340db75dd" },
+				{ "binding": "GOOGLE_TOKENS", "id": "220cc7f6714845dc8c6ea845640edcef" }
 			],
 			"d1_databases": [
 				{
 					"binding": "AUDIT_DB",
 					"database_name": "gobridge-audit",
-					"database_id": "REPLACE_WITH_PROD_AUDIT_DB_ID",
+					"database_id": "f5b2af01-a4ac-4bce-909b-7696b5c3fff6",
 					"migrations_dir": "migrations"
 				}
 			]
