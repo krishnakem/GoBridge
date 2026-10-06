@@ -1,6 +1,7 @@
 import { createExecutionContext, createScheduledController, env } from "cloudflare:test";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { saveAccount } from "../src/accounts";
+import { LINK_SCOPES } from "../src/google";
 import { clearAccessTokenCache } from "../src/google-api";
 import {
 	AUDIT_RETENTION_DAYS,
@@ -11,9 +12,8 @@ import {
 	writeUsage,
 } from "../src/guardrails";
 import worker from "../src/index";
-import { runReadTool } from "../src/read-tools";
+import { runReadTool, runWriteTool } from "../src/tools";
 import { counterWindow } from "../src/usage-counter";
-import { runWriteTool } from "../src/write-tools";
 
 const CLIENT = { clientId: "client-storage-1", clientName: "Claude" };
 let counter = 0;
@@ -26,7 +26,7 @@ async function linked() {
 		alias,
 		email: `store${counter}@example.com`,
 		refreshToken: "1//fake-google-refresh-token",
-		scopes: [],
+		scopes: [...LINK_SCOPES],
 		sub: `store-sub-${counter}`,
 	});
 	return alias;
@@ -47,7 +47,7 @@ function mockGoogle() {
 		if (url.pathname.includes("/drafts/")) {
 			return Response.json({
 				id: "draft1",
-				message: { payload: { headers: [{ name: "To", value: "bob@example.com" }] } },
+				message: { labelIds: ["DRAFT"], payload: { headers: [{ name: "To", value: "bob@example.com" }] } },
 			});
 		}
 		return Response.json({ id: "m1" });
@@ -85,7 +85,7 @@ describe("usage counters (Durable Object)", () => {
 		expect(results.filter((r) => r.allowed).map((r) => r.count).sort((a, b) => a - b)).toEqual(
 			Array.from({ length: 60 }, (_x, i) => i + 1),
 		);
-		expect(await stub.usage()).toEqual({ read: 0, send: 0, write: 60 });
+		expect(await stub.usage()).toEqual({ read: 0, send: 0, share: 0, write: 60 });
 	});
 
 	it("keeps read, write and send counts separate, and separate per account", async () => {
@@ -93,8 +93,8 @@ describe("usage counters (Durable Object)", () => {
 		const b = counterFor("separate-b");
 		await Promise.all([a.take("read", 5), a.take("read", 5), a.take("write", 5), a.take("send", 5)]);
 		await b.take("read", 5);
-		expect(await a.usage()).toEqual({ read: 2, send: 1, write: 1 });
-		expect(await b.usage()).toEqual({ read: 1, send: 0, write: 0 });
+		expect(await a.usage()).toEqual({ read: 2, send: 1, share: 0, write: 1 });
+		expect(await b.usage()).toEqual({ read: 1, send: 0, share: 0, write: 0 });
 		expect((await a.take("read", 2)).allowed).toBe(false);
 		expect((await a.take("read", 0)).allowed).toBe(false);
 		// A broken limit can never mean "unlimited".
@@ -111,19 +111,19 @@ describe("usage counters (Durable Object)", () => {
 		expect(counterWindow("send", Date.UTC(2026, 9, 6, 0, 0, 0))).toBe("2026-10-06");
 	});
 
-	it("enforces the send cap exactly under concurrent send_draft calls", async () => {
+	it("enforces the send cap exactly under concurrent send_message calls", async () => {
 		const alias = await linked();
 		const paths = mockGoogle();
 		const capped = { ...env, DAILY_SEND_CAP: "5" } as Env;
 		const results = await Promise.all(
 			Array.from({ length: 20 }, () =>
-				runWriteTool(capped, CLIENT, "send_draft", { account: alias, draftId: "draft1" }),
+				runWriteTool(capped, CLIENT, "send_message", { account: alias, draftId: "draft1" }),
 			),
 		);
 		expect(results.filter((r) => !r.isError)).toHaveLength(5);
 		const refused = results.filter((r) => r.isError);
 		expect(refused).toHaveLength(15);
-		expect(refused.every((r) => r.content[0].text.includes("Daily send cap reached"))).toBe(true);
+		expect(refused.every((r) => r.content[0].text?.includes("Daily send cap reached"))).toBe(true);
 		expect(paths.filter((p) => p.endsWith("/drafts/send"))).toHaveLength(5);
 		expect(await writeUsage(env, alias)).toMatchObject({ sendsToday: 5, writesThisHour: 20 });
 	});
@@ -184,7 +184,7 @@ describe("fail closed", () => {
 		for (const broken of brokenEnvs()) {
 			for (const [name, args] of [
 				["trash_message", { account: alias, messageId: "m1" }],
-				["send_draft", { account: alias, draftId: "draft1" }],
+				["send_message", { account: alias, draftId: "draft1" }],
 				["create_draft", { account: alias, to: ["bob@example.com"], subject: "s", body: "b" }],
 			] as const) {
 				const res = await runWriteTool(broken, CLIENT, name, args);
@@ -209,13 +209,13 @@ describe("fail closed", () => {
 				idFromName: () => ({}),
 			},
 		} as unknown as Env;
-		const res = await runWriteTool(sendBroken, CLIENT, "send_draft", { account: alias, draftId: "draft1" });
+		const res = await runWriteTool(sendBroken, CLIENT, "send_message", { account: alias, draftId: "draft1" });
 		expect(res.isError).toBe(true);
 		expect(res.content[0].text).toContain("could not check its usage limits");
 		expect(paths.some((p) => p.endsWith("/drafts/send"))).toBe(false);
 		// The refused attempt is still on the audit log.
 		const [entry] = (await listAudit(env, 1000)).filter((e) => e.alias === alias);
-		expect(entry).toMatchObject({ outcome: "counter_unavailable", tool: "send_draft" });
+		expect(entry).toMatchObject({ outcome: "counter_unavailable", tool: "send_message" });
 	});
 });
 

@@ -14,7 +14,9 @@ const ALLOWED_SCOPES = [
 	"https://www.googleapis.com/auth/gmail.modify",
 	"https://www.googleapis.com/auth/gmail.send",
 	"https://www.googleapis.com/auth/calendar.events",
-	"https://www.googleapis.com/auth/drive.readonly",
+	"https://www.googleapis.com/auth/calendar.calendarlist.readonly",
+	"https://www.googleapis.com/auth/calendar.freebusy",
+	"https://www.googleapis.com/auth/drive",
 	"openid",
 	"email",
 ];
@@ -23,7 +25,9 @@ const GOOGLE_FULL_GRANT = [
 	"https://www.googleapis.com/auth/gmail.modify",
 	"https://www.googleapis.com/auth/gmail.send",
 	"https://www.googleapis.com/auth/calendar.events",
-	"https://www.googleapis.com/auth/drive.readonly",
+	"https://www.googleapis.com/auth/calendar.calendarlist.readonly",
+	"https://www.googleapis.com/auth/calendar.freebusy",
+	"https://www.googleapis.com/auth/drive",
 	"openid",
 	"https://www.googleapis.com/auth/userinfo.email",
 ].join(" ");
@@ -224,8 +228,7 @@ describe("link scopes", () => {
 			expect(scope).not.toBe("https://mail.google.com/");
 			expect(scope).not.toContain("gmail.settings");
 			expect(scope).not.toBe("https://www.googleapis.com/auth/calendar");
-			expect(scope).not.toBe("https://www.googleapis.com/auth/drive");
-			expect(scope).not.toContain("drive.file");
+			expect(scope).not.toContain("drive.readonly");
 		}
 	});
 
