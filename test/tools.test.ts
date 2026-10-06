@@ -8,7 +8,7 @@ import { clearAccessTokenCache } from "../src/google-api";
 import { DAILY_SHARE_CAP, KILL_SWITCHES, listAudit } from "../src/guardrails";
 import { ALL_TOOLS, READ_TOOLS, registerTools, runTool, WRITE_TOOLS } from "../src/tools";
 import { findFreeSlots } from "../src/tools/calendar";
-import { untrusted } from "../src/tools/common";
+import { normalizeDriveQuery, parseInZone, untrusted } from "../src/tools/common";
 import { officeText } from "../src/tools/drive";
 import { buildMimeMessage } from "../src/tools/gmail";
 
@@ -601,7 +601,10 @@ describe("Gmail", () => {
 		const fwdMime = decodeMime(sent()[2].body.raw);
 		expect(fwdMime.headers).toContain("Subject: Fwd: Quarterly plans");
 		expect(fwdMime.message).toContain('filename="report.pdf"');
-		expect(sent()[2].body.threadId).toBeUndefined();
+		// Forwards stay in the original conversation, like Gmail's UI.
+		expect(sent()[2].body.threadId).toBe("t-m1");
+		expect(fwdMime.headers).toContain("In-Reply-To: <orig@mail.example>");
+		expect(fwdMime.headers).toContain("References: <first@mail.example> <orig@mail.example>");
 		const audit = await writeAudit(alias);
 		expect(audit.find((e) => e.tool === "forward")!.meta).toMatchObject({ originalMessageId: "m1", recipients: ["dave@example.com"], subject: "Fwd: Quarterly plans" });
 		expect(JSON.stringify(audit)).not.toContain("FYI");
@@ -650,13 +653,16 @@ describe("Gmail", () => {
 		expect(calls.map((c) => `${c.method} ${c.path.replace("/gmail/v1/users/me", "")}`)).toEqual([
 			"POST /messages/m1/trash",
 			"POST /threads/t1/untrash",
+			"GET /threads/t1",
 			"POST /messages/m1/modify",
 			"POST /threads/t1/modify",
+			"GET /threads/t1",
 			"POST /messages/m1/trash",
 			"POST /threads/t1/modify",
+			"GET /threads/t1",
 		]);
-		expect(calls[2].body).toEqual({ addLabelIds: ["SPAM"], removeLabelIds: ["INBOX"] });
-		expect(calls[3].body).toEqual({ addLabelIds: ["INBOX"], removeLabelIds: ["SPAM"] });
+		expect(calls[3].body).toEqual({ addLabelIds: ["SPAM"], removeLabelIds: ["INBOX"] });
+		expect(calls[4].body).toEqual({ addLabelIds: ["INBOX"], removeLabelIds: ["SPAM"] });
 		expect(calls.some((c) => c.method === "DELETE")).toBe(false);
 		expect((await writeAudit(alias)).map((e) => e.meta.action)).toEqual(expect.arrayContaining(["trash", "untrash", "spam", "unspam"]));
 	});
@@ -971,5 +977,161 @@ describe("untrusted content and logging", () => {
 		const audit = JSON.stringify([...(await writeAudit(alias)), ...(await readAudit(alias))]);
 		for (const content of ["confidential-query", "Private body", "Private content", "Hello body"]) expect(audit).not.toContain(content);
 		expect(audit).toContain("Private subject");
+	});
+});
+
+describe("live-test fixes", () => {
+	it("Drive listing asks for everything the account can see, including files uploaded in the web UI", async () => {
+		const { alias } = await linked();
+		// A file uploaded by the user in the Drive UI: no app properties, owned by the user, plus one shared with them.
+		const uploaded = { id: "up1", name: "Vacation photos.zip", mimeType: "application/zip", size: "9000", owners: [{ emailAddress: "me@example.com" }] };
+		const sharedWithMe = { id: "sh1", name: "Team plan", mimeType: "application/vnd.google-apps.document", shared: true, owners: [{ emailAddress: "colleague@example.com" }] };
+		const calls = mockGoogle((c) => {
+			if (c.path === "/drive/v3/files" && c.method === "GET") return Response.json({ files: [uploaded, sharedWithMe] });
+			if (c.path === "/drive/v3/files/up1") return Response.json(uploaded);
+			if (c.path === "/drive/v3/files/missing") return new Response("{}", { status: 404 });
+		});
+		const found = (await call("search_files", { account: alias, query: "title contains 'Vacation' and trashed = false" })).json();
+		expect(found.files.map((f: any) => f.id)).toEqual(["up1", "sh1"]);
+		expect(found.files[0]).toMatchObject({ name: "Vacation photos.zip", size: 9000 });
+		expect(found.files[1]).toMatchObject({ name: "Team plan", size: null, shared: true });
+		const params = calls[0].url.searchParams;
+		expect(params.get("q")).toBe("name contains 'Vacation' and trashed = false");
+		expect(params.get("corpora")).toBe("allDrives");
+		expect(params.get("includeItemsFromAllDrives")).toBe("true");
+		expect(params.get("supportsAllDrives")).toBe("true");
+		expect(params.get("spaces")).toBe("drive");
+		// No implicit filter: the query is passed through untouched apart from title -> name.
+		expect(params.get("q")).not.toMatch(/appProperties|owners|'me'/);
+
+		const recent = (await call("list_recent_files", { account: alias })).json();
+		expect(recent.files.map((f: any) => f.id)).toEqual(["up1", "sh1"]);
+		expect(calls[1].url.searchParams.get("q")).toBe("trashed = false");
+		expect(calls[1].url.searchParams.get("corpora")).toBe("allDrives");
+
+		expect((await call("get_file_metadata", { account: alias, fileId: "up1" })).json()).toMatchObject({ id: "up1", size: 9000 });
+		expect(calls[2].url.searchParams.get("supportsAllDrives")).toBe("true");
+		const missing = await call("get_file_metadata", { account: alias, fileId: "missing" });
+		expect(missing.text).toContain("not another Google account");
+	});
+
+	it("search_files maps Google's `title` to Drive's `name` outside quotes", () => {
+		expect(normalizeDriveQuery("title contains 'budget'")).toBe("name contains 'budget'");
+		expect(normalizeDriveQuery("title = 'x' or title != 'y'")).toBe("name = 'x' or name != 'y'");
+		expect(normalizeDriveQuery("name contains 'title' and fullText contains 'the title page'")).toBe("name contains 'title' and fullText contains 'the title page'");
+		expect(normalizeDriveQuery("fullText contains 'it\\'s a title' and title contains 'a'")).toBe("fullText contains 'it\\'s a title' and name contains 'a'");
+		expect(normalizeDriveQuery("subtitle contains 'x'")).toBe("subtitle contains 'x'");
+	});
+
+	it("suggest_time reads offset-less times in the time zone and never suggests the past", async () => {
+		expect(parseInZone("2026-10-06T09:00:00", "America/Detroit")).toBe(Date.UTC(2026, 9, 6, 13, 0));
+		expect(parseInZone("2026-01-06T09:00:00", "America/Detroit")).toBe(Date.UTC(2026, 0, 6, 14, 0));
+		expect(parseInZone("2026-10-06T09:00:00", "Europe/Berlin")).toBe(Date.UTC(2026, 9, 6, 7, 0));
+		expect(parseInZone("2026-10-06T09:00:00Z", "Europe/Berlin")).toBe(Date.UTC(2026, 9, 6, 9, 0));
+		expect(parseInZone("2026-10-06T09:00:00-04:00", "Europe/Berlin")).toBe(Date.UTC(2026, 9, 6, 13, 0));
+
+		const { alias } = await linked();
+		const calls = mockGoogle((c) => (c.path.endsWith("/freeBusy") ? Response.json({ calendars: {} }) : undefined));
+		const res = await call("suggest_time", {
+			account: alias,
+			attendeeEmails: ["boss@example.com"],
+			startTime: "2099-03-02T09:00:00",
+			endTime: "2099-03-02T12:00:00",
+			durationMinutes: 60,
+			preferences: { startHour: 8, endHour: 18, excludeWeekends: true, pageSize: 10 },
+		});
+		expect(res.isError).toBe(false);
+		// The free/busy window and every slot are inside the requested local-time range.
+		expect(calls[0].body.timeMin).toBe("2099-03-02T14:00:00.000Z");
+		expect(calls[0].body.timeMax).toBe("2099-03-02T17:00:00.000Z");
+		expect(res.json().suggestions.map((s: any) => s.start)).toEqual(["2099-03-02T09:00:00-05:00", "2099-03-02T10:00:00-05:00", "2099-03-02T11:00:00-05:00"]);
+		expect(res.json().searchedFrom).toBe("2099-03-02T09:00:00-05:00");
+
+		// Nothing before startTime, nothing before now.
+		const start = Date.UTC(2026, 9, 12, 13, 0); // Monday 09:00 Detroit
+		const slots = findFreeSlots(start - 3_600_000, start + 2 * 3_600_000, 30, [], "America/Detroit", { endHour: 17, excludeWeekends: true, pageSize: 10, startHour: 9 }, start);
+		expect(slots.every((s) => s.start >= start)).toBe(true);
+		expect(slots[0].start).toBe(start);
+		const later = findFreeSlots(start, start + 2 * 3_600_000, 30, [], "America/Detroit", { endHour: 17, excludeWeekends: true, pageSize: 10, startHour: 9 }, start + 50 * 60_000);
+		expect(later[0].start).toBe(start + 60 * 60_000);
+		const past = await call("suggest_time", { account: alias, attendeeEmails: ["boss@example.com"], startTime: "2020-01-06T09:00:00", endTime: "2020-01-06T17:00:00" });
+		expect(past.json().suggestions).toEqual([]);
+	});
+
+	it("unmarking spam and untrashing put the item back in the inbox, except sent-only mail", async () => {
+		const { alias } = await linked();
+		const calls = mockGoogle((c) => {
+			if (c.path.endsWith("/messages/sentonly/untrash")) return Response.json({ id: "sentonly", labelIds: ["SENT"] });
+			if (c.path.endsWith("/messages/gone/untrash")) return Response.json({ id: "gone", labelIds: ["UNREAD", "Label_1"] });
+			if (c.path.endsWith("/messages/kept/untrash")) return Response.json({ id: "kept", labelIds: ["INBOX", "UNREAD"] });
+			if (c.path.endsWith("/threads/tgone/untrash")) return Response.json({ id: "tgone" });
+			if (c.path === "/gmail/v1/users/me/threads/tgone") return Response.json({ id: "tgone", messages: [{ labelIds: ["UNREAD"] }, { labelIds: ["Label_1"] }] });
+		});
+		await call("unmark_message_spam", { account: alias, messageId: "m1" });
+		expect(calls[0].body).toEqual({ addLabelIds: ["INBOX"], removeLabelIds: ["SPAM"] });
+		await call("unmark_thread_spam", { account: alias, threadId: "t1" });
+		expect(calls[1].body).toEqual({ addLabelIds: ["INBOX"], removeLabelIds: ["SPAM"] });
+
+		const gone = await call("untrash_message", { account: alias, messageId: "gone" });
+		expect(calls.find((c) => c.path.endsWith("/messages/gone/modify"))!.body).toEqual({ addLabelIds: ["INBOX"], removeLabelIds: [] });
+		expect(gone.json().labelIds).toContain("INBOX");
+		await call("untrash_message", { account: alias, messageId: "kept" });
+		expect(calls.some((c) => c.path.endsWith("/messages/kept/modify"))).toBe(false);
+		const sentOnly = await call("untrash_message", { account: alias, messageId: "sentonly" });
+		expect(calls.some((c) => c.path.endsWith("/messages/sentonly/modify"))).toBe(false);
+		expect(sentOnly.json().labelIds).toEqual(["SENT"]);
+		await call("untrash_thread", { account: alias, threadId: "tgone" });
+		expect(calls.find((c) => c.path.endsWith("/threads/tgone/modify"))!.body).toEqual({ addLabelIds: ["INBOX"], removeLabelIds: [] });
+	});
+
+	it("thread label tools return the thread's resulting labels", async () => {
+		const { alias } = await linked();
+		mockGoogle((c) => (c.path === "/gmail/v1/users/me/threads/t1" ? Response.json({ id: "t1", messages: [{ labelIds: ["INBOX", "Label_1"] }, { labelIds: ["Label_2", "UNREAD"] }] }) : undefined));
+		for (const [name, args] of [
+			["label_thread", { account: alias, threadId: "t1", labelIds: ["Label_1"] }],
+			["unlabel_thread", { account: alias, threadId: "t1", labelIds: ["Label_9"] }],
+			["mark_thread_spam", { account: alias, threadId: "t1" }],
+			["unmark_thread_spam", { account: alias, threadId: "t1" }],
+		] as const) {
+			const res = await call(name, args);
+			expect(res.json().labelIds, name).toEqual(["INBOX", "Label_1", "Label_2", "UNREAD"]);
+		}
+	});
+
+	it("create_event defaults to the calendar's default reminders; update_event leaves them alone", async () => {
+		const { alias } = await linked();
+		const calls = mockGoogle();
+		await call("create_event", { account: alias, summary: "A", startTime: "2026-10-06T10:00:00", endTime: "2026-10-06T11:00:00" });
+		expect(calls.find((c) => c.method === "POST")!.body.reminders).toEqual({ useDefault: true });
+		await call("create_event", { account: alias, summary: "B", startTime: "2026-10-06T10:00:00", endTime: "2026-10-06T11:00:00", useDefaultReminders: false });
+		expect(calls.filter((c) => c.method === "POST")[1].body.reminders).toEqual({ useDefault: false });
+		await call("update_event", { account: alias, eventId: "evt1", summary: "C" });
+		expect(calls.find((c) => c.method === "PATCH")!.body).toEqual({ summary: "C" });
+	});
+
+	it("wraps RAW content, attendee names and emails, and permission names and emails", async () => {
+		const { alias } = await linked();
+		mockGoogle();
+		const raw = (await call("get_message", { account: alias, messageId: "m1", messageFormat: "RAW" })).raw();
+		expect(raw.raw).toBe(`<untrusted_content source="email">${b64("raw message")}</untrusted_content>`);
+		const event = (await call("get_event", { account: alias, eventId: "evt1" })).raw();
+		expect(event.attendees[0].email).toBe('<untrusted_content source="calendar">boss@example.com</untrusted_content>');
+		const perms = (await call("get_file_permissions", { account: alias, fileId: "f1" })).raw();
+		expect(perms.permissions[0].emailAddress).toBe('<untrusted_content source="drive">owner@example.com</untrusted_content>');
+		expect(perms.permissions[0].displayName).toBe('<untrusted_content source="drive">Owner</untrusted_content>');
+	});
+
+	it("create_file and copy_file report size null for Google-native files", async () => {
+		const { alias } = await linked();
+		mockGoogle((c) => {
+			if (c.path.endsWith("/copy")) return Response.json({ id: "copy1", name: "Copy", mimeType: "application/vnd.google-apps.spreadsheet", size: "1" });
+			if (c.path === "/upload/drive/v3/files" && !c.text.includes("google-apps")) return Response.json({ id: "raw1", name: "Raw", mimeType: "text/plain", size: "4" });
+		});
+		const doc = (await call("create_file", { account: alias, title: "Notes", textContent: "x" })).json();
+		expect(doc.size).toBeNull();
+		const copy = (await call("copy_file", { account: alias, fileId: "f1" })).json();
+		expect(copy.size).toBeNull();
+		const txt = (await call("create_file", { account: alias, title: "Raw", textContent: "keep", disableConversionToGoogleType: true, contentMimeType: "text/plain" })).json();
+		expect(txt.size).not.toBeNull();
 	});
 });

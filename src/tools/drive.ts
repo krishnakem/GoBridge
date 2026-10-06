@@ -17,6 +17,7 @@ import {
 	email,
 	googleId,
 	LIMITS,
+	normalizeDriveQuery,
 	pageSize,
 	pageToken,
 	singleLine,
@@ -50,7 +51,8 @@ function shapeFile(file: DriveFile) {
 		id: file.id,
 		name: untrusted("drive", cap(file.name, LIMITS.headerChars)),
 		mimeType: file.mimeType,
-		size: file.size !== undefined ? Number(file.size) : undefined,
+		// Google-native files (Docs, Sheets, Slides, folders) have no byte size.
+		size: typeof file.mimeType === "string" && file.mimeType.startsWith("application/vnd.google-apps.") ? null : file.size !== undefined ? Number(file.size) : undefined,
 		createdTime: file.createdTime,
 		modifiedTime: file.modifiedTime,
 		webViewLink: file.webViewLink,
@@ -66,14 +68,27 @@ function shapeFile(file: DriveFile) {
 const fileUrl = (fileId: string, extra = "") => `${DRIVE}/${encodeURIComponent(fileId)}?${ALL_DRIVES}${extra}`;
 
 async function metadata(env: Env, alias: string, fileId: string): Promise<DriveFile> {
-	return googleJson<DriveFile>(env, alias, fileUrl(fileId, `&fields=${encodeURIComponent(FIELDS)}`), { what: "file id" });
+	try {
+		return await googleJson<DriveFile>(env, alias, fileUrl(fileId, `&fields=${encodeURIComponent(FIELDS)}`), { what: "file id" });
+	} catch (error) {
+		if (error instanceof ToolError && error.category === "not_found") {
+			throw new ToolError(
+				"not_found",
+				"Not found: no file with that id is visible to this linked Google account. Check the id, and that the file lives in (or is shared with) the account shown by list_accounts, not another Google account.",
+			);
+		}
+		throw error;
+	}
 }
 
 async function listFiles(env: Env, alias: string, params: Record<string, string>, what: string) {
 	const url = new URL(DRIVE);
 	url.searchParams.set("fields", `nextPageToken,files(${FIELDS})`);
+	// Everything the account can see: My Drive, Shared with me, and shared drives.
 	url.searchParams.set("supportsAllDrives", "true");
 	url.searchParams.set("includeItemsFromAllDrives", "true");
+	url.searchParams.set("corpora", "allDrives");
+	url.searchParams.set("spaces", "drive");
 	for (const [k, v] of Object.entries(params)) url.searchParams.set(k, v);
 	return googleJson<{ files?: DriveFile[]; nextPageToken?: string }>(env, alias, url, { what });
 }
@@ -207,7 +222,7 @@ export const DRIVE_TOOLS = [
 	tool({
 		name: "search_files",
 		title: "Search Google Drive",
-		description: `Searches Drive with Google's query syntax, e.g. name contains 'budget' and mimeType = 'application/pdf', fullText contains 'quarterly', '<folderId>' in parents, sharedWithMe = true, modifiedTime > '2026-01-01T00:00:00'. Returns metadata only. ${UNTRUSTED}`,
+		description: `Searches Drive with Google's query syntax, e.g. title contains 'budget' and mimeType = 'application/pdf', fullText contains 'quarterly', '<folderId>' in parents, sharedWithMe = true, modifiedTime > '2026-01-01T00:00:00' (title and name both work). Covers My Drive, Shared with me and shared drives. Returns metadata only. ${UNTRUSTED}`,
 		kind: "read",
 		countKey: "files",
 		schema: z.object({
@@ -218,7 +233,7 @@ export const DRIVE_TOOLS = [
 			excludeContentSnippets: z.boolean().default(true).describe("Snippets are not available; results are metadata only"),
 		}),
 		run: async (env, args) => {
-			const params: Record<string, string> = { pageSize: String(args.pageSize), q: args.query };
+			const params: Record<string, string> = { pageSize: String(args.pageSize), q: normalizeDriveQuery(args.query) };
 			if (args.pageToken) params.pageToken = args.pageToken;
 			const data = await listFiles(env, args.account, params, "search query");
 			return { files: (data.files ?? []).slice(0, args.pageSize).map(shapeFile), nextPageToken: data.nextPageToken };
@@ -270,7 +285,7 @@ export const DRIVE_TOOLS = [
 					id: p.id,
 					type: p.type,
 					role: p.role,
-					emailAddress: cap(p.emailAddress, LIMITS.headerChars),
+					emailAddress: untrusted("drive", cap(p.emailAddress, LIMITS.headerChars)),
 					displayName: untrusted("drive", cap(p.displayName, LIMITS.headerChars)),
 					domain: cap(p.domain, LIMITS.headerChars),
 					allowFileDiscovery: p.allowFileDiscovery,

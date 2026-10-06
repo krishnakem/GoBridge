@@ -17,6 +17,7 @@ import {
 	LIMITS,
 	notificationLevel,
 	pageSize,
+	parseInZone,
 	pageToken,
 	sendUpdatesFor,
 	singleLine,
@@ -53,7 +54,7 @@ function shapeEvent(event: CalendarEvent, zone: string, descriptionChars: number
 		organizer: cap(event.organizer?.email, LIMITS.headerChars),
 		creator: cap(event.creator?.email, LIMITS.headerChars),
 		attendees: guests.slice(0, LIMITS.attendees).map((a) => ({
-			email: cap(a?.email, LIMITS.headerChars),
+			email: untrusted("calendar", cap(a?.email, LIMITS.headerChars)),
 			displayName: untrusted("calendar", cap(a?.displayName, LIMITS.headerChars)),
 			responseStatus: a?.responseStatus,
 			optional: a?.optional === true ? true : undefined,
@@ -134,7 +135,10 @@ const mapAttendee = (a: z.infer<typeof attendeeInput>) => ({
 });
 
 /** Converts the tool's fields into a Google event body (only the fields given). */
-function eventBody(args: Partial<z.infer<z.ZodObject<typeof eventFields>>> & { summary?: string; startTime?: string; endTime?: string }) {
+function eventBody(
+	args: Partial<z.infer<z.ZodObject<typeof eventFields>>> & { summary?: string; startTime?: string; endTime?: string },
+	creating = false,
+) {
 	const zone = args.timeZone ?? DEFAULT_TIME_ZONE;
 	const body: CalendarEvent = {};
 	if (args.summary !== undefined) body.summary = args.summary;
@@ -153,6 +157,7 @@ function eventBody(args: Partial<z.infer<z.ZodObject<typeof eventFields>>> & { s
 	if (args.recurrenceData) body.recurrence = args.recurrenceData;
 	if (args.overrideReminders) body.reminders = { overrides: args.overrideReminders, useDefault: false };
 	else if (args.useDefaultReminders !== undefined) body.reminders = { useDefault: args.useDefaultReminders };
+	else if (creating) body.reminders = { useDefault: true };
 	if (args.availability) body.transparency = args.availability === "free" ? "transparent" : "opaque";
 	if (args.visibility) body.visibility = args.visibility;
 	if (args.colorId) body.colorId = args.colorId;
@@ -201,11 +206,14 @@ export function findFreeSlots(
 	busy: Busy[],
 	zone: string,
 	prefs: { startHour: number; endHour: number; excludeWeekends: boolean; pageSize: number },
+	now = Date.now(),
 ): { start: number; end: number }[] {
 	const slots: { start: number; end: number }[] = [];
 	const step = 15 * 60_000;
 	const length = durationMinutes * 60_000;
-	for (let t = Math.ceil(start / step) * step; t + length <= end && slots.length < prefs.pageSize; t += step) {
+	// Never before startTime, never in the past.
+	const earliest = Math.max(start, now);
+	for (let t = Math.ceil(earliest / step) * step; t + length <= end && slots.length < prefs.pageSize; t += step) {
 		const { hour, weekday } = localParts(t, zone);
 		const endLocal = localParts(t + length - 1, zone);
 		if (prefs.excludeWeekends && (weekday === 0 || weekday === 6)) continue;
@@ -328,7 +336,7 @@ export const CALENDAR_TOOLS = [
 			noteEvent(ctx, args);
 			ctx.audit.summary = args.summary;
 			const event = await googleJson<CalendarEvent>(env, args.account, eventsUrl(args.calendarId, null, writeQuery(args.notificationLevel)), {
-				json: eventBody(args),
+				json: eventBody(args, true),
 				method: "POST",
 				what: "calendar id or event details",
 			});
@@ -467,8 +475,9 @@ export const CALENDAR_TOOLS = [
 				.default({ endHour: 17, excludeWeekends: true, pageSize: 10, startHour: 9 }),
 		}),
 		run: async (env, args, ctx) => {
-			const start = Date.parse(args.startTime);
-			const end = Date.parse(args.endTime);
+			// Offset-less times are read in timeZone, like the event tools.
+			const start = parseInZone(args.startTime, args.timeZone);
+			const end = parseInZone(args.endTime, args.timeZone);
 			if (!(end > start)) throw new ToolError("invalid_input", "Invalid input: endTime must be after startTime.");
 			if (end - start > 62 * 24 * 3_600_000) throw new ToolError("invalid_input", "Invalid input: the range may span at most 62 days.");
 			if (args.preferences.endHour <= args.preferences.startHour) throw new ToolError("invalid_input", "Invalid input: endHour must be after startHour.");
@@ -495,6 +504,8 @@ export const CALENDAR_TOOLS = [
 				suggestions: slots.map((s) => ({ start: formatInZone(new Date(s.start).toISOString(), args.timeZone), end: formatInZone(new Date(s.end).toISOString(), args.timeZone) })),
 				timeZone: args.timeZone,
 				durationMinutes: args.durationMinutes,
+				searchedFrom: formatInZone(new Date(Math.max(start, Date.now())).toISOString(), args.timeZone),
+				searchedTo: formatInZone(new Date(end).toISOString(), args.timeZone),
 				checked: ids,
 				freeBusyUnavailableFor: unavailable,
 			};
