@@ -191,6 +191,32 @@ export function formatInZone(value: unknown, zone: string): string | undefined {
 	return `${local}${offset < 0 ? "-" : "+"}${pad(Math.abs(offset) / 60)}:${pad(Math.abs(offset) % 60)}`;
 }
 
+/**
+ * Parses an RFC 3339 time. A value without an offset is read as local time in
+ * `zone` (not as UTC). Returns NaN for anything unparsable.
+ */
+export function parseInZone(value: string, zone: string): number {
+	if (/(Z|[+-]\d{2}:\d{2})$/.test(value)) return Date.parse(value);
+	const guess = Date.parse(`${value}Z`);
+	if (Number.isNaN(guess)) return guess;
+	const offsetAt = (instant: number) => {
+		const local = formatInZone(new Date(instant).toISOString(), zone) ?? "";
+		const match = /([+-])(\d{2}):(\d{2})$/.exec(local);
+		if (!match) return 0;
+		return (match[1] === "-" ? -1 : 1) * (Number(match[2]) * 60 + Number(match[3])) * 60_000;
+	};
+	const first = guess - offsetAt(guess);
+	return guess - offsetAt(first);
+}
+
+/** Maps Google-connector query syntax onto Drive's: `title` becomes `name` outside quoted strings. */
+export function normalizeDriveQuery(query: string): string {
+	return query
+		.split(/('(?:[^'\\]|\\.)*')/)
+		.map((part, i) => (i % 2 === 1 ? part : part.replace(/\btitle\b/g, "name")))
+		.join("");
+}
+
 // ---------- Tool definitions ----------
 
 export type McpContent =

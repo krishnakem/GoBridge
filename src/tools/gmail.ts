@@ -142,7 +142,7 @@ function shapeMessage(message: GmailMessage, format: MessageFormat, ctx: ToolCon
 	if (format === "MINIMAL") return { ...basic, bodyChars: 0 };
 	if (format === "RAW") {
 		const raw = capBody(message.raw ?? "", LIMITS.rawChars);
-		return { ...basic, raw: raw.text, rawTruncated: raw.truncated, bodyChars: raw.text.length };
+		return { ...basic, raw: untrusted("email", raw.text), rawTruncated: raw.truncated, bodyChars: raw.text.length };
 	}
 	const meta = {
 		...basic,
@@ -471,6 +471,17 @@ const colorPreset = z.enum(Object.keys(COLOR_PRESETS) as [string, ...string[]]).
 const labelListVisibility = z.enum(["labelShow", "labelShowIfUnread", "labelHide"]).optional();
 const messageListVisibility = z.enum(["show", "hide"]).optional();
 
+/** A thread's labels are the union of its messages' labels. */
+async function threadLabels(env: Env, alias: string, threadId: string): Promise<string[]> {
+	const thread = await googleJson<{ messages?: GmailMessage[] }>(
+		env,
+		alias,
+		`${GMAIL}/threads/${encodeURIComponent(threadId)}?format=minimal`,
+		{ what: "thread id" },
+	);
+	return [...new Set((thread.messages ?? []).flatMap((m) => m.labelIds ?? []))].slice(0, 50);
+}
+
 async function modify(env: Env, ctx: ToolContext, kind: "messages" | "threads", id: string, add: string[], remove: string[]) {
 	const what = kind === "messages" ? "message id" : "thread id";
 	const result = await googleJson<{ id?: string; threadId?: string; labelIds?: string[] }>(
@@ -479,15 +490,26 @@ async function modify(env: Env, ctx: ToolContext, kind: "messages" | "threads", 
 		`${GMAIL}/${kind}/${encodeURIComponent(id)}/modify`,
 		{ json: { addLabelIds: add, removeLabelIds: remove }, method: "POST", what },
 	);
-	return { id, labelIds: (result.labelIds ?? []).slice(0, 50), viewUrl: viewUrl(ctx, id) };
+	// threads.modify answers with the thread only; fetch the resulting labels.
+	const labelIds = kind === "threads" ? await threadLabels(env, ctx.alias, id) : (result.labelIds ?? []).slice(0, 50);
+	return { id, labelIds, viewUrl: viewUrl(ctx, id) };
 }
 
 async function trashOp(env: Env, ctx: ToolContext, kind: "messages" | "threads", id: string, op: "trash" | "untrash") {
-	await googleRequest(env, ctx.alias, `${GMAIL}/${kind}/${encodeURIComponent(id)}/${op}`, {
-		method: "POST",
-		what: kind === "messages" ? "message id" : "thread id",
-	}).then((resp) => resp.body?.cancel());
-	return { id, [op === "trash" ? "trashed" : "untrashed"]: true, viewUrl: viewUrl(ctx, id) };
+	const what = kind === "messages" ? "message id" : "thread id";
+	const result = await googleJson<{ id?: string; labelIds?: string[]; messages?: GmailMessage[] }>(
+		env,
+		ctx.alias,
+		`${GMAIL}/${kind}/${encodeURIComponent(id)}/${op}`,
+		{ method: "POST", what },
+	);
+	let labelIds = kind === "threads" ? await threadLabels(env, ctx.alias, id) : (result.labelIds ?? []).slice(0, 50);
+	// Gmail's UI puts a restored message back in the inbox; the API only drops TRASH.
+	// Re-add INBOX unless the item is sent-only or a draft.
+	if (op === "untrash" && !labelIds.includes("INBOX") && !labelIds.includes("DRAFT") && !(labelIds.includes("SENT") && labelIds.every((l) => l === "SENT" || /^Label_|^CATEGORY_/.test(l)))) {
+		labelIds = (await modify(env, ctx, kind, id, ["INBOX"], [])).labelIds;
+	}
+	return { id, [op === "trash" ? "trashed" : "untrashed"]: true, labelIds, viewUrl: viewUrl(ctx, id) };
 }
 
 const noteId = (ctx: ToolContext, kind: "messages" | "threads", id: string) => {
@@ -1021,7 +1043,8 @@ export const GMAIL_TOOLS = [
 				subject: /^fwd?:/i.test(orig.subject) ? orig.subject : `Fwd: ${orig.subject}`,
 				to: args.to,
 			};
-			return sendRaw(env, ctx, message, {});
+			// Gmail's UI keeps a forward in the original conversation.
+			return sendRaw(env, ctx, message, orig.threading);
 		},
 	}),
 
