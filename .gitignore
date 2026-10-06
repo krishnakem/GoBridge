@@ -29,3 +29,13 @@ PROD_CHECKLIST.md
 # Markdown files stay local (rules, specs, reviews). README.md is the one exception.
 *.md
 !README.md
+
+# Backups, local tool settings, keys
+*.bundle
+md-backup/
+.claude/settings.local.json
+.vscode/
+.idea/
+coverage/
+*.pem
+*.key
