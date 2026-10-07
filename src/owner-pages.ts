@@ -4,21 +4,33 @@
  *   GET  /audit           recent writes and which AI client made them
  *   GET  /clients         registered AI clients and their active grants
  *   POST /clients/revoke  revoke one client's grants + registration (session + CSRF)
- *   GET  /settings        read-only status (environment, limits, usage, re-link flags)
+ *   GET  /settings        status (environment, limits, usage, re-link flags) and the
+ *                         allowed AI clients list, the one thing editable here
+ *   POST /settings/allowed-clients         allow one redirect URL     (session + CSRF)
+ *   POST /settings/allowed-clients/remove  remove one redirect URL    (session + CSRF)
  *   POST /logout          end the owner session (session + CSRF); other methods get 405
  *   GET  /signed-out      public "Signed out" notice with a Sign in button
  *
- * Like /link: no content without an owner session, and the only state-changing
+ * Like /link: no content without an owner session, and every state-changing
  * action is POST-only with a CSRF token.
  */
 import type { ClientInfo, GrantSummary, OAuthHelpers } from "@cloudflare/workers-oauth-provider";
 import { Hono } from "hono";
+import {
+	addAllowedRedirect,
+	isRedirectAllowed,
+	listAllowedRedirects,
+	MAX_ALLOWED_REDIRECTS,
+	normalizeRedirectUri,
+	removeAllowedRedirect,
+} from "./allowed-clients";
 import {
 	type AuditEntry,
 	dailySendCap,
 	DAILY_SHARE_CAP,
 	KILL_SWITCHES,
 	listAudit,
+	recordAudit,
 	readRateLimit,
 	WRITE_RATE_LIMIT_PER_HOUR,
 	writesEnabled,
@@ -59,6 +71,7 @@ function auditDetails(entry: AuditEntry): string {
 	if (meta.parentId) parts.push(`Folder id: ${meta.parentId}`);
 	if (meta.recipient) parts.push(`Shared with: ${meta.recipient}${meta.role ? ` (${meta.role})` : ""}`);
 	if (meta.newAlias) parts.push(`Renamed to: ${meta.newAlias}`);
+	if (meta.redirectUri) parts.push(`Redirect URL: ${meta.redirectUri}`);
 	if (meta.resultCount !== undefined) parts.push(`Items returned: ${meta.resultCount}`);
 	return parts.map(escapeHtml).join("<br>");
 }
@@ -133,14 +146,31 @@ const NOTICES: Record<string, string> = {
 	revoked: "Client revoked. Its tokens no longer work.",
 };
 
+/** One client's redirect URLs, each marked as on or off the allowed list. */
+function redirectCell(uris: readonly string[], allowed: string[] | null): string {
+	if (!uris.length) return '<span class="muted">none</span>';
+	return uris
+		.map((uri) => {
+			const badge =
+				allowed === null
+					? '<span class="badge">List unavailable</span>'
+					: isRedirectAllowed(uri, allowed)
+						? '<span class="badge badge-ok">Allowed</span>'
+						: '<span class="badge badge-alert">Not allowed</span>';
+			return `<span class="mono small">${escapeHtml(uri)}</span> ${badge}`;
+		})
+		.join("<br>");
+}
+
 app.get("/clients", async (c) => {
 	const session = await readOwnerSession(c.req.raw, c.env);
 	if (!session) return startOwnerLogin(c.req.raw, c.env, "/clients");
 
-	const [clients, grants, { attention }] = await Promise.all([
+	const [clients, grants, { attention }, allowed] = await Promise.all([
 		allClients(c.env.OAUTH_PROVIDER),
 		allGrants(c.env.OAUTH_PROVIDER, session.sub),
 		ownerStatus(c.env),
+		listAllowedRedirects(c.env).catch(() => null),
 	]);
 	const csrf = escapeHtml(session.csrf);
 	const day = (seconds?: number) =>
@@ -163,6 +193,7 @@ app.get("/clients", async (c) => {
 			return `<tr>
 <td><strong>${escapeHtml(client.clientName || "(no name)")}</strong><br><span class="muted mono small">${escapeHtml(client.clientId)}</span></td>
 <td class="muted">${escapeHtml(day(client.registrationDate))}</td>
+<td>${redirectCell(client.redirectUris ?? [], allowed)}</td>
 <td>${access}</td>
 <td><form class="inline" method="post" action="/clients/revoke">
 <input type="hidden" name="csrf_token" value="${csrf}">
@@ -174,7 +205,7 @@ app.get("/clients", async (c) => {
 		.join("\n");
 	const table = clients.length
 		? `<div class="table-wrap"><table>
-<tr><th>AI client</th><th>Registered</th><th>Access</th><th></th></tr>
+<tr><th>AI client</th><th>Registered</th><th>Redirect URLs</th><th>Access</th><th></th></tr>
 ${rows}
 </table></div>`
 		: `<p class="muted">No AI clients have registered yet.</p>`;
@@ -184,7 +215,7 @@ ${rows}
 		active: "/clients",
 		attention,
 		bodyHtml: `${notice ? `<p class="notice">${escapeHtml(notice)}</p>` : ""}
-<p class="muted">Every app that has registered with GoBridge. Names are chosen by the app itself. Revoking a client cancels its tokens and removes its registration; other clients keep working. To use it again, add GoBridge in that app again.</p>
+<p class="muted">Every app that has registered with GoBridge. Names are chosen by the app itself, so judge an app by its redirect URLs: it can connect only when all of them are on the allowed list in Settings. Revoking a client cancels its tokens and removes its registration; other clients keep working. To use it again, add GoBridge in that app again.</p>
 ${table}`,
 		session,
 		title: "AI clients",
@@ -229,8 +260,48 @@ function environmentName(env: Env): string {
 	return "Unknown";
 }
 
-// Read-only status. Nothing here can be edited: settings change only through
-// wrangler config and a deploy.
+const SETTINGS_NOTICES: Record<string, string> = {
+	allowed: "Redirect URL allowed. Apps that use only allowed URLs can now connect.",
+	exists: "That redirect URL was already on the list. Nothing changed.",
+	removed: "Redirect URL removed. Apps that use it are cut off at once.",
+};
+
+/** The allowed AI clients section of /settings: the list, Remove buttons and the add form. */
+function allowedClientsSection(allowed: string[] | null, csrf: string): string {
+	const list =
+		allowed === null
+			? '<p class="warn">The allowed list could not be read just now, so every AI client is being refused. Reload the page to try again.</p>'
+			: allowed.length
+				? `<div class="table-wrap"><table>
+<tr><th>Redirect URL</th><th></th></tr>
+${allowed
+	.map(
+		(uri) => `<tr>
+<td class="mono small">${escapeHtml(uri)}</td>
+<td><form class="inline" method="post" action="/settings/allowed-clients/remove">
+<input type="hidden" name="csrf_token" value="${csrf}">
+<input type="hidden" name="redirect_uri" value="${escapeHtml(uri)}">
+<button class="btn-danger" type="submit">Remove</button>
+</form></td>
+</tr>`,
+	)
+	.join("\n")}
+</table></div>`
+				: '<p class="warn">The list is empty, so no AI client can connect. Add the redirect URL of each app you use.</p>';
+	return `<h2>Allowed AI clients</h2>
+<p class="muted">An AI app can sign in and use GoBridge only when every redirect URL it registered is on this list. Removing a URL cuts off the apps that use it at once. When an app that is not allowed tries to connect, GoBridge shows you the exact URL to add.</p>
+${list}
+<form class="field" method="post" action="/settings/allowed-clients">
+<input type="hidden" name="csrf_token" value="${csrf}">
+<label for="redirect_uri">Redirect URL</label>
+<input id="redirect_uri" type="url" name="redirect_uri" required maxlength="512" autocomplete="off">
+<button class="btn-primary" type="submit">Allow</button>
+</form>
+<p class="muted small">Exact URLs only, no wildcards. Loopback URLs (<code>localhost</code>, <code>127.0.0.1</code>) match on any port, for apps such as Claude Code. The AI clients page shows the redirect URLs each registered app uses. At most ${MAX_ALLOWED_REDIRECTS} URLs.</p>`;
+}
+
+// Status, read-only except for the allowed AI clients list. Limits and switches
+// change only through wrangler config and a deploy.
 app.get("/settings", async (c) => {
 	const session = await readOwnerSession(c.req.raw, c.env);
 	if (!session) return startOwnerLogin(c.req.raw, c.env, "/settings");
@@ -239,6 +310,9 @@ app.get("/settings", async (c) => {
 	const usage = await Promise.all(accounts.map((account) => writeUsage(c.env, account.alias)));
 	const cap = dailySendCap(c.env);
 	const enabled = writesEnabled(c.env);
+	const allowed = await listAllowedRedirects(c.env).catch(() => null);
+	const csrf = escapeHtml(session.csrf);
+	const notice = SETTINGS_NOTICES[c.req.query("msg") ?? ""];
 
 	const rows = accounts
 		.map(
@@ -289,8 +363,10 @@ ${rows}
 	return renderOwnerPage({
 		active: "/settings",
 		attention,
-		bodyHtml: `${warnings}
-<p class="muted">Read-only status. To change a setting, edit <code>wrangler.jsonc</code> and deploy.</p>
+		bodyHtml: `${notice ? `<p class="notice">${escapeHtml(notice)}</p>` : ""}${warnings}
+${allowedClientsSection(allowed, csrf)}
+<h2>Status</h2>
+<p class="muted">Read-only. To change a limit or switch, edit <code>wrangler.jsonc</code> and deploy.</p>
 <dl class="facts">
 <dt>Environment</dt><dd>${escapeHtml(environmentName(c.env))} <span class="muted mono small">${escapeHtml(c.env.BASE_URL)}</span></dd>
 ${switchRows}
@@ -306,6 +382,88 @@ ${table}`,
 		session,
 		title: "Settings",
 	});
+});
+
+/** Shared by add and remove: session + CSRF, then a normalized redirect URL. */
+async function allowedClientsPost(c: any, route: string) {
+	const gate = await requireOwnerPost(c, route);
+	if (gate instanceof Response) return gate;
+	const normalized = normalizeRedirectUri(gate.form.get("redirect_uri"));
+	if (!normalized.ok) {
+		console.warn(`${route} denied: bad_redirect_uri`);
+		return renderMessagePage("Could not continue", normalized.reason, 400, undefined, "/settings");
+	}
+	return { session: gate.session, uri: normalized.uri };
+}
+
+async function auditOwnerChange(env: Env, route: string, tool: string, uri: string) {
+	try {
+		await recordAudit(env, {
+			alias: "",
+			clientId: "owner",
+			clientName: "Owner (/settings)",
+			meta: { redirectUri: uri },
+			outcome: "ok",
+			tool,
+		});
+	} catch (_e) {
+		console.error(`${route} error: audit_failed`);
+	}
+}
+
+const listUnavailable = (route: string) => {
+	console.error(`${route} error: list_unavailable`);
+	return renderMessagePage(
+		"Could not continue",
+		"GoBridge could not update its list of allowed apps. Nothing was changed. Try again in a moment.",
+		503,
+		undefined,
+		"/settings",
+	);
+};
+
+app.post("/settings/allowed-clients", async (c) => {
+	const route = "POST /settings/allowed-clients";
+	const input = await allowedClientsPost(c, route);
+	if (input instanceof Response) return input;
+	let outcome: Awaited<ReturnType<typeof addAllowedRedirect>>;
+	try {
+		outcome = await addAllowedRedirect(c.env, input.uri);
+	} catch (_e) {
+		return listUnavailable(route);
+	}
+	if (outcome === "full") {
+		console.warn(`${route} denied: list_full`);
+		return renderMessagePage(
+			"Could not continue",
+			`The list already holds ${MAX_ALLOWED_REDIRECTS} redirect URLs. Remove one first.`,
+			400,
+			undefined,
+			"/settings",
+		);
+	}
+	if (outcome === "added") await auditOwnerChange(c.env, route, "allow_client_url", input.uri);
+	console.log(`${route} ok: ${outcome}`);
+	return c.redirect(`/settings?msg=${outcome === "added" ? "allowed" : "exists"}`, 303);
+});
+
+app.post("/settings/allowed-clients/remove", async (c) => {
+	const route = "POST /settings/allowed-clients/remove";
+	const input = await allowedClientsPost(c, route);
+	if (input instanceof Response) return input;
+	let removed: boolean;
+	try {
+		removed = await removeAllowedRedirect(c.env, input.uri);
+	} catch (_e) {
+		return listUnavailable(route);
+	}
+	if (!removed) {
+		console.warn(`${route} denied: not_listed`);
+		return renderMessagePage("Could not continue", "That redirect URL is not on the list.", 404, undefined, "/settings");
+	}
+	await auditOwnerChange(c.env, route, "remove_client_url", input.uri);
+	console.log(`${route} ok`);
+	return c.redirect("/settings?msg=removed", 303);
 });
 
 app.post("/logout", async (c) => {

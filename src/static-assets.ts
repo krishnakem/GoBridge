@@ -88,7 +88,8 @@ form.inline input[type=text]{width:8rem;margin-right:4px}
 .account-cell{display:inline-flex;align-items:center;gap:8px;max-width:100%}
 .account-cell .avatar{flex:none}
 .field{display:flex;flex-wrap:wrap;align-items:center;gap:8px;margin:0 0 12px}
-input[type=text]{height:32px;width:14rem;max-width:100%;padding:0 10px;border:1px solid #e4e4e7;border-radius:6px;font:inherit;color:#18181b}
+input[type=text],input[type=url]{height:32px;width:14rem;max-width:100%;padding:0 10px;border:1px solid #e4e4e7;border-radius:6px;font:inherit;color:#18181b}
+input[type=url]{width:28rem}
 .facts{display:grid;grid-template-columns:1fr;gap:2px 24px;margin:0 0 12px}
 .facts dt{color:#71717a;font-size:13px;margin-top:10px}
 .facts dd{margin:0}

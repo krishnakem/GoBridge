@@ -1,5 +1,13 @@
-import { SELF } from "cloudflare:test";
+import { env, SELF } from "cloudflare:test";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import {
+	addAllowedRedirect,
+	checkClient,
+	isRedirectAllowed,
+	listAllowedRedirects,
+	normalizeRedirectUri,
+	removeAllowedRedirect,
+} from "../src/allowed-clients";
 import { isAllowedEmail, verifyOwner } from "../src/auth";
 
 const BASE = "https://gobridge.test";
@@ -54,13 +62,13 @@ async function pkcePair() {
 	return { verifier, challenge };
 }
 
-async function registerClient(name = "Test Client") {
+async function registerClient(name = "Test Client", redirectUris = [CLIENT_REDIRECT]) {
 	const res = await SELF.fetch(`${BASE}/register`, {
 		method: "POST",
 		headers: { "Content-Type": "application/json" },
 		body: JSON.stringify({
 			client_name: name,
-			redirect_uris: [CLIENT_REDIRECT],
+			redirect_uris: redirectUris,
 			token_endpoint_auth_method: "none",
 		}),
 	});
@@ -144,7 +152,52 @@ function allLogOutput(): string {
 		.join("\n");
 }
 
-beforeEach(() => {
+/** Empties the owner's allowed-clients list, then allows exactly these URLs. */
+async function setAllowed(...uris: string[]) {
+	await env.AUDIT_DB.prepare("DELETE FROM allowed_redirect_uris").run();
+	for (const uri of uris) {
+		const normalized = normalizeRedirectUri(uri);
+		if (!normalized.ok) throw new Error(`test setup: bad URL ${uri}`);
+		await addAllowedRedirect(env, normalized.uri);
+	}
+}
+
+/** Opens /authorize for a client with a fresh PKCE pair. */
+async function openAuthorize(clientId: string, redirectUri = CLIENT_REDIRECT) {
+	const { challenge } = await pkcePair();
+	return SELF.fetch(
+		`${BASE}/authorize?${new URLSearchParams({
+			response_type: "code",
+			client_id: clientId,
+			redirect_uri: redirectUri,
+			code_challenge: challenge,
+			code_challenge_method: "S256",
+			state: "client-state",
+			resource: `${BASE}/mcp`,
+		})}`,
+		{ redirect: "manual" },
+	);
+}
+
+const mcpInitialize = (accessToken: string) =>
+	SELF.fetch(`${BASE}/mcp`, {
+		method: "POST",
+		headers: {
+			Authorization: `Bearer ${accessToken}`,
+			"Content-Type": "application/json",
+			Accept: "application/json, text/event-stream",
+		},
+		body: JSON.stringify({
+			jsonrpc: "2.0",
+			id: 1,
+			method: "initialize",
+			params: { protocolVersion: "2025-06-18", capabilities: {}, clientInfo: { name: "test", version: "0" } },
+		}),
+	});
+
+beforeEach(async () => {
+	// The sign-in tests below use CLIENT_REDIRECT, so it is on the owner's list.
+	await setAllowed(CLIENT_REDIRECT);
 	logSpies = (["log", "info", "warn", "error", "debug"] as const).map((level) =>
 		vi.spyOn(console, level),
 	);
@@ -251,7 +304,13 @@ describe("unauthenticated access", () => {
 			expect(new URL(res.headers.get("Location")!).hostname).toBe("accounts.google.com");
 			expect(await res.text()).toBe("");
 		}
-		for (const path of ["/link/rename", "/link/unlink", "/clients/revoke"]) {
+		for (const path of [
+			"/link/rename",
+			"/link/unlink",
+			"/clients/revoke",
+			"/settings/allowed-clients",
+			"/settings/allowed-clients/remove",
+		]) {
 			const res = await SELF.fetch(`${BASE}${path}`, { method: "POST", redirect: "manual" });
 			expect(res.status, path).toBe(403);
 		}
@@ -535,5 +594,197 @@ describe("review hardening", () => {
 		expect(logs).not.toContain("OAuth error response");
 		expect(logs).not.toContain("secret-looking");
 		expect(logs).not.toContain("no-such-client");
+	});
+});
+
+describe("allowed AI clients", () => {
+	it("normalizes redirect URLs and refuses anything but https or loopback http", () => {
+		expect(normalizeRedirectUri(" https://Claude.AI/api/mcp/auth_callback ")).toEqual({
+			ok: true,
+			uri: "https://claude.ai/api/mcp/auth_callback",
+		});
+		expect(normalizeRedirectUri("http://localhost:3118/callback")).toEqual({
+			ok: true,
+			uri: "http://localhost/callback",
+		});
+		expect(normalizeRedirectUri("http://127.0.0.1:55555/callback")).toEqual({
+			ok: true,
+			uri: "http://127.0.0.1/callback",
+		});
+		for (const bad of [
+			"",
+			"   ",
+			"not a url",
+			"http://client.example/callback",
+			"https://*.claude.ai/callback",
+			"https://claude.ai/cb#frag",
+			"https://user:pass@claude.ai/cb",
+			"javascript:alert(1)",
+			"data:text/html,hi",
+			"cursor://anysphere.cursor-mcp/oauth/callback",
+			`https://claude.ai/${"a".repeat(600)}`,
+			42,
+			null,
+		]) {
+			expect(normalizeRedirectUri(bad).ok, String(bad)).toBe(false);
+		}
+	});
+
+	it("matches exactly, except that loopback URLs match on any port", () => {
+		const allowed = ["https://claude.ai/api/mcp/auth_callback", "http://localhost/callback"];
+		expect(isRedirectAllowed("https://claude.ai/api/mcp/auth_callback", allowed)).toBe(true);
+		expect(isRedirectAllowed("http://localhost:3118/callback", allowed)).toBe(true);
+		expect(isRedirectAllowed("http://localhost/callback", allowed)).toBe(true);
+		for (const other of [
+			"https://claude.ai/api/mcp/auth_callback/",
+			"https://claude.ai/api/mcp/auth_callback?next=https://evil.example",
+			"https://claude.ai/other",
+			"https://evil.claude.ai/api/mcp/auth_callback",
+			"http://claude.ai/api/mcp/auth_callback",
+			"http://localhost:3118/other",
+			"http://127.0.0.1:3118/callback",
+		]) {
+			expect(isRedirectAllowed(other, allowed), other).toBe(false);
+		}
+	});
+
+	it("refuses a client whose redirect URL is not listed, before any approval or Google sign-in", async () => {
+		const fetchSpy = mockGoogle();
+		await setAllowed();
+		const clientId = await registerClient();
+		const res = await openAuthorize(clientId);
+		expect(res.status).toBe(403);
+		expect(res.headers.get("Location")).toBeNull();
+		expect(res.headers.getSetCookie()).toHaveLength(0);
+		expect(res.headers.get("Content-Security-Policy")).toContain("frame-ancestors 'none'");
+		const html = await res.text();
+		expect(html).toContain("This app is not allowed to connect");
+		expect(html).toContain(`<code>${CLIENT_REDIRECT}</code>`);
+		expect(html).toContain('href="/settings"');
+		expect(html).toContain("If you did not start this connection");
+		// No approval form, nothing that could continue the flow.
+		expect(html).not.toContain("<form");
+		expect(fetchSpy).not.toHaveBeenCalled();
+		expect(allLogOutput()).toContain("GET /authorize denied: client_not_allowed");
+	});
+
+	it("requires every redirect URL a client registered to be listed", async () => {
+		const extra = "https://attacker.example/cb";
+		const clientId = await registerClient("Claude", [CLIENT_REDIRECT, extra]);
+		const res = await openAuthorize(clientId);
+		expect(res.status).toBe(403);
+		const html = await res.text();
+		expect(html).toContain(`<code>${extra}</code>`);
+		expect(html).not.toContain(`<code>${CLIENT_REDIRECT}</code>`);
+
+		await addAllowedRedirect(env, extra);
+		const allowed = await openAuthorize(clientId);
+		expect(allowed.status).toBe(200);
+		await allowed.body?.cancel();
+	});
+
+	it("escapes hostile redirect URLs on the refusal page", async () => {
+		await setAllowed();
+		const clientId = await registerClient("Evil", ["https://evil.example/cb?x=<script>alert(1)</script>&y=\"'"]);
+		const res = await openAuthorize(
+			clientId,
+			"https://evil.example/cb?x=<script>alert(1)</script>&y=\"'",
+		);
+		const html = await res.text();
+		expect(html).not.toContain("<script>alert");
+		expect(html).not.toMatch(/<code>[^<]*["'][^<]*<\/code>/);
+	});
+
+	it("lets a loopback client in on any port when its loopback URL is listed", async () => {
+		await setAllowed("http://localhost/callback");
+		const clientId = await registerClient("Claude Code", ["http://localhost:3118/callback"]);
+		const res = await openAuthorize(clientId, "http://localhost:3118/callback");
+		expect(res.status).toBe(200);
+		await res.body?.cancel();
+	});
+
+	it("refuses the approval form if the URL was removed after the dialog opened", async () => {
+		mockGoogle();
+		const clientId = await registerClient();
+		const dialog = await openAuthorize(clientId);
+		expect(dialog.status).toBe(200);
+		const html = await dialog.text();
+		await setAllowed();
+		const approve = await SELF.fetch(`${BASE}/authorize`, {
+			method: "POST",
+			redirect: "manual",
+			headers: { "Content-Type": "application/x-www-form-urlencoded", Cookie: cookiesFrom(dialog) },
+			body: new URLSearchParams({
+				state: html.match(/name="state" value="([^"]+)"/)![1],
+				csrf_token: html.match(/name="csrf_token" value="([^"]+)"/)![1],
+			}).toString(),
+		});
+		expect(approve.status).toBe(403);
+		expect(approve.headers.get("Location")).toBeNull();
+	});
+
+	it("refuses /callback, without signing in to Google or issuing a grant, if the URL was removed mid-flow", async () => {
+		const fetchSpy = mockGoogle();
+		const login = await startLogin();
+		await setAllowed();
+		const callback = await finishCallback(login);
+		expect(callback.status).toBe(403);
+		expect(callback.headers.get("Location")).toBeNull();
+		expect(fetchSpy).not.toHaveBeenCalled();
+		// The one-time session binding cookie is still cleared.
+		expect(callback.headers.getSetCookie().join(";")).toContain("__Host-CONSENTED_STATE=;");
+	});
+
+	it("cuts off /mcp the moment the client's URL is removed, and restores it when re-added", async () => {
+		mockGoogle();
+		const login = await startLogin();
+		const code = new URL((await finishCallback(login)).headers.get("Location")!).searchParams.get("code")!;
+		const tokens = (await (await exchangeCode(login, code)).json()) as Record<string, string>;
+
+		const before = await mcpInitialize(tokens.access_token);
+		expect(before.status).toBe(200);
+		await before.body?.cancel();
+
+		expect(await removeAllowedRedirect(env, CLIENT_REDIRECT)).toBe(true);
+		const after = await mcpInitialize(tokens.access_token);
+		expect(after.status).toBe(403);
+		expect(await after.text()).toContain("not on GoBridge's allowed list");
+		expect(allLogOutput()).toContain("/mcp denied: client_not_allowed");
+
+		await addAllowedRedirect(env, CLIENT_REDIRECT);
+		const restored = await mcpInitialize(tokens.access_token);
+		expect(restored.status).toBe(200);
+		await restored.body?.cancel();
+	});
+
+	it("fails closed when the list cannot be read", async () => {
+		const broken = {
+			...env,
+			AUDIT_DB: {
+				prepare() {
+					throw new Error("D1 unavailable");
+				},
+			},
+		} as unknown as Env;
+		expect(await checkClient(broken, { redirectUris: [CLIENT_REDIRECT] })).toEqual({
+			ok: false,
+			reason: "list_unavailable",
+		});
+		expect(await checkClient(env, null)).toEqual({ ok: false, reason: "unknown_client" });
+		expect(await checkClient(env, { redirectUris: [CLIENT_REDIRECT] }, "https://other.example/cb")).toEqual({
+			ok: false,
+			reason: "unknown_client",
+		});
+		expect(await checkClient(env, { redirectUris: [CLIENT_REDIRECT] })).toEqual({ ok: true });
+	});
+
+	it("caps the list and ignores duplicates", async () => {
+		await setAllowed();
+		for (let i = 0; i < 20; i++) {
+			expect(await addAllowedRedirect(env, `https://app${i}.example/cb`)).toBe("added");
+		}
+		expect(await addAllowedRedirect(env, "https://app0.example/cb")).toBe("exists");
+		expect(await addAllowedRedirect(env, "https://app20.example/cb")).toBe("full");
+		expect(await listAllowedRedirects(env)).toHaveLength(20);
 	});
 });

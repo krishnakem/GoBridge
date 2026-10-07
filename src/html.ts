@@ -90,10 +90,11 @@ export function renderMessagePage(
 	message: string,
 	status: number,
 	extraHeaders?: Headers,
-	backTo?: "/link",
+	backTo?: "/link" | "/settings",
 	action?: { href: "/link"; label: string },
 ): Response {
-	const back = backTo ? `\n<p><a href="${backTo}">Back to linked accounts</a></p>` : "";
+	const backLabel = backTo === "/settings" ? "Back to settings" : "Back to linked accounts";
+	const back = backTo ? `\n<p><a href="${backTo}">${backLabel}</a></p>` : "";
 	const button = action
 		? `\n<p><a class="btn btn-primary" href="${action.href}">${escapeHtml(action.label)}</a></p>`
 		: "";
@@ -102,6 +103,28 @@ export function renderMessagePage(
 		`<h1>${escapeHtml(title)}</h1>\n<p>${escapeHtml(message)}</p>${button}${back}`,
 		status,
 		extraHeaders,
+	);
+}
+
+/**
+ * Shown at /authorize or /callback when an AI client is not on the owner's
+ * allowed list. The owner is the one in the browser, so the page names the
+ * exact redirect URLs to add on /settings, and warns against adding them for a
+ * connection the owner did not start. Every URL is escaped.
+ */
+export function renderClientNotAllowedPage(unlisted: readonly string[]): Response {
+	const items = unlisted.map((uri) => `<li><code>${escapeHtml(uri)}</code></li>`).join("\n");
+	return renderPage(
+		"App not allowed",
+		`<h1>This app is not allowed to connect</h1>
+<p>GoBridge only lets AI apps connect when every redirect URL they use is on your allowed list. This app uses:</p>
+<ul>
+${items}
+</ul>
+<p>If you just added GoBridge to this app yourself, add ${unlisted.length === 1 ? "this URL" : "these URLs"} under <strong>Allowed AI clients</strong> on the Settings page, then connect again.</p>
+<p class="warn">If you did not start this connection, close this page and add nothing: someone may be trying to get access to your accounts.</p>
+<p><a class="btn btn-primary" href="/settings">Open Settings</a></p>`,
+		403,
 	);
 }
 
