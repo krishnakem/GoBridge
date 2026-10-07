@@ -1,7 +1,8 @@
 import type { AuthRequest, OAuthHelpers } from "@cloudflare/workers-oauth-provider";
 import { Hono } from "hono";
+import { checkClient } from "./allowed-clients";
 import { verifyOwner } from "./auth";
-import { renderMessagePage } from "./html";
+import { renderClientNotAllowedPage, renderMessagePage } from "./html";
 import { LinkHandler } from "./link-handler";
 import { OwnerPages } from "./owner-pages";
 import { finishOwnerLogin, OWNER_LOGIN_STATE_PREFIX } from "./session";
@@ -38,6 +39,37 @@ function hasRequiredPkce(request: AuthRequest): boolean {
 	return Boolean(request.codeChallenge) && request.codeChallengeMethod === "S256";
 }
 
+/**
+ * The owner's allowed-clients list (set on /settings). Returns a refusal page
+ * unless every redirect URL this client registered is on the list and the
+ * requested one is among them. Fails closed. Checked before the approval
+ * dialog, again when the approval is submitted, and again at /callback.
+ */
+async function refuseUnlistedClient(
+	env: Env & { OAUTH_PROVIDER: OAuthHelpers },
+	request: AuthRequest,
+	route: string,
+	extraHeaders?: Headers,
+): Promise<Response | null> {
+	const client = request.clientId ? await env.OAUTH_PROVIDER.lookupClient(request.clientId) : null;
+	const verdict = await checkClient(env, client, request.redirectUri);
+	if (verdict.ok) return null;
+	console.warn(`${route} denied: client_${verdict.reason}`);
+	if (verdict.reason === "not_allowed") {
+		const page = renderClientNotAllowedPage(verdict.unlisted);
+		extraHeaders?.forEach((value, name) => page.headers.append(name, value));
+		return page;
+	}
+	return renderMessagePage(
+		"Could not continue",
+		verdict.reason === "list_unavailable"
+			? "GoBridge could not check its list of allowed apps, so it refused this connection. Try again in a moment."
+			: "This app is not registered with GoBridge. Remove GoBridge from the app and add it again.",
+		verdict.reason === "list_unavailable" ? 503 : 400,
+		extraHeaders,
+	);
+}
+
 // Health check: no data, no auth.
 app.get("/health", (c) => c.text("ok"));
 
@@ -64,6 +96,8 @@ app.get("/authorize", async (c) => {
 		console.warn("GET /authorize denied: pkce_required");
 		return c.text("PKCE with S256 is required", 400);
 	}
+	const refusal = await refuseUnlistedClient(c.env, oauthReqInfo, "GET /authorize");
+	if (refusal) return refusal;
 
 	// Check if client is already approved
 	if (await isClientApproved(c.req.raw, clientId, c.env.COOKIE_ENCRYPTION_KEY)) {
@@ -118,6 +152,8 @@ app.post("/authorize", async (c) => {
 			console.warn("POST /authorize denied: pkce_required");
 			return c.text("PKCE with S256 is required", 400);
 		}
+		const refusal = await refuseUnlistedClient(c.env, state.oauthReqInfo, "POST /authorize");
+		if (refusal) return refusal;
 
 		// Add client to approved list
 		const approvedClientCookie = await addApprovedClient(
@@ -208,6 +244,9 @@ app.get("/callback", async (c) => {
 	if (!oauthReqInfo.clientId || !code) {
 		return renderMessagePage("Sign-in failed", "The sign-in request was incomplete.", 400, headers);
 	}
+	// The list may have changed since /authorize: check again before signing in.
+	const refusal = await refuseUnlistedClient(c.env, oauthReqInfo, "GET /callback", headers);
+	if (refusal) return refusal;
 
 	const claims = await fetchGoogleIdentityClaims({
 		clientId: c.env.GOOGLE_CLIENT_ID,

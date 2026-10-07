@@ -322,7 +322,7 @@ describe("/settings", () => {
 		expect(post.status).toBe(404);
 	});
 
-	it("shows read-only status and no editable settings", async () => {
+	it("shows read-only status; the allowed AI clients list is the only thing editable", async () => {
 		mockGoogle();
 		await saveAccount(env, {
 			alias: "settings-acct",
@@ -344,9 +344,13 @@ describe("/settings", () => {
 		expect(html).toContain("settings-acct");
 		expect(html).toContain("<td>3 of 25</td>");
 		expect(html).toContain("https://gobridge.test");
-		// The only form on the page is sign-out (twice: sidebar and top bar).
-		expect(html.match(/<form /g)).toHaveLength(2);
-		expect(html).not.toMatch(/<input(?![^>]*type="hidden")/);
+		// Sign-out (twice: sidebar and top bar) plus the one "allow a redirect URL" form.
+		expect(html.match(/<form /g)).toHaveLength(3);
+		expect(html.match(/<input(?![^>]*type="hidden")[^>]*>/g)).toEqual([
+			'<input id="redirect_uri" type="url" name="redirect_uri" required maxlength="512" autocomplete="off">',
+		]);
+		expect(html).toContain("<h2>Allowed AI clients</h2>");
+		expect(html).toContain("The list is empty, so no AI client can connect.");
 		for (const secret of [env.GOOGLE_CLIENT_SECRET, env.COOKIE_ENCRYPTION_KEY, env.TOKEN_ENCRYPTION_KEY, "1//"]) {
 			expect(html).not.toContain(secret);
 		}
@@ -557,5 +561,156 @@ describe("sign-out", () => {
 			expect(new URL(replay.headers.get("Location")!).hostname).toBe("accounts.google.com");
 		}
 		expect((await logout(owner.cookie, { csrf_token: owner.csrf })).status).toBe(403);
+	});
+});
+
+describe("/settings allowed AI clients", () => {
+	const CLAUDE = "https://claude.ai/api/mcp/auth_callback";
+
+	const post = (path: string, cookie: string, fields: Record<string, string>) =>
+		SELF.fetch(`${BASE}${path}`, {
+			method: "POST",
+			redirect: "manual",
+			headers: { "Content-Type": "application/x-www-form-urlencoded", Cookie: cookie },
+			body: new URLSearchParams(fields).toString(),
+		});
+
+	const listed = async () =>
+		(await env.AUDIT_DB.prepare("SELECT uri FROM allowed_redirect_uris ORDER BY uri").all<{ uri: string }>()).results.map(
+			(r) => r.uri,
+		);
+
+	const ownerAudit = async () =>
+		(
+			await env.AUDIT_DB.prepare(
+				"SELECT tool, client_id, meta FROM audit_writes WHERE client_id = 'owner' AND tool LIKE '%client_url' ORDER BY id",
+			).all<{ tool: string; client_id: string; meta: string }>()
+		).results;
+
+	const reset = async () => {
+		await env.AUDIT_DB.prepare("DELETE FROM allowed_redirect_uris").run();
+		await env.AUDIT_DB.prepare("DELETE FROM audit_writes WHERE client_id = 'owner'").run();
+	};
+
+	it("refuses changes without an owner session or a valid CSRF token", async () => {
+		mockGoogle();
+		await reset();
+		const owner = await signIn("/settings");
+		for (const path of ["/settings/allowed-clients", "/settings/allowed-clients/remove"]) {
+			const noSession = await post(path, "", { redirect_uri: CLAUDE, csrf_token: owner.csrf });
+			expect(noSession.status, path).toBe(403);
+			const forged = await post(path, owner.cookie, { redirect_uri: CLAUDE, csrf_token: "forged" });
+			expect(forged.status, path).toBe(403);
+			const missing = await post(path, owner.cookie, { redirect_uri: CLAUDE });
+			expect(missing.status, path).toBe(403);
+		}
+		// GET on the action URLs does nothing.
+		expect((await get("/settings/allowed-clients", owner.cookie)).status).toBe(404);
+		expect(await listed()).toEqual([]);
+		expect(await ownerAudit()).toEqual([]);
+	});
+
+	it("adds a normalized URL, shows it with a Remove button, and audits the change", async () => {
+		mockGoogle();
+		await reset();
+		const owner = await signIn("/settings");
+		const res = await post("/settings/allowed-clients", owner.cookie, {
+			redirect_uri: " https://Claude.AI/api/mcp/auth_callback ",
+			csrf_token: owner.csrf,
+		});
+		expect(res.status).toBe(303);
+		expect(res.headers.get("Location")).toBe("/settings?msg=allowed");
+		expect(await listed()).toEqual([CLAUDE]);
+
+		const html = await (await get("/settings?msg=allowed", owner.cookie)).text();
+		expect(html).toContain("Redirect URL allowed.");
+		expect(html).toContain(`<td class="mono small">${CLAUDE}</td>`);
+		expect(html).toContain('action="/settings/allowed-clients/remove"');
+		expect(html).toContain(`<input type="hidden" name="redirect_uri" value="${CLAUDE}">`);
+		expect(html).not.toContain("The list is empty");
+
+		// Adding it again changes nothing and is not audited twice.
+		const again = await post("/settings/allowed-clients", owner.cookie, { redirect_uri: CLAUDE, csrf_token: owner.csrf });
+		expect(again.headers.get("Location")).toBe("/settings?msg=exists");
+		expect(await listed()).toEqual([CLAUDE]);
+
+		const audit = await ownerAudit();
+		expect(audit).toHaveLength(1);
+		expect(audit[0].tool).toBe("allow_client_url");
+		expect(JSON.parse(audit[0].meta).redirectUri).toBe(CLAUDE);
+		const auditPage = await (await get("/audit", owner.cookie)).text();
+		expect(auditPage).toContain(`Redirect URL: ${CLAUDE}`);
+		expect(auditPage).toContain("Owner (/settings)");
+	});
+
+	it("rejects URLs that are not https or loopback http, wildcards, and fragments", async () => {
+		mockGoogle();
+		await reset();
+		const owner = await signIn("/settings");
+		for (const bad of [
+			"http://evil.example/cb",
+			"https://*.claude.ai/cb",
+			"https://claude.ai/cb#x",
+			"javascript:alert(1)",
+			"not a url",
+			"",
+		]) {
+			const res = await post("/settings/allowed-clients", owner.cookie, { redirect_uri: bad, csrf_token: owner.csrf });
+			expect(res.status, bad).toBe(400);
+			const html = await res.text();
+			expect(html).toContain('<a href="/settings">Back to settings</a>');
+			expect(html).not.toContain("javascript:alert");
+		}
+		expect(await listed()).toEqual([]);
+		expect(await ownerAudit()).toEqual([]);
+	});
+
+	it("removes a URL and audits it; removing an unlisted URL is a 404", async () => {
+		mockGoogle();
+		await reset();
+		const owner = await signIn("/settings");
+		await post("/settings/allowed-clients", owner.cookie, { redirect_uri: CLAUDE, csrf_token: owner.csrf });
+		await post("/settings/allowed-clients", owner.cookie, {
+			redirect_uri: "http://localhost:3118/callback",
+			csrf_token: owner.csrf,
+		});
+		expect(await listed()).toEqual(["http://localhost/callback", CLAUDE]);
+
+		const res = await post("/settings/allowed-clients/remove", owner.cookie, { redirect_uri: CLAUDE, csrf_token: owner.csrf });
+		expect(res.status).toBe(303);
+		expect(res.headers.get("Location")).toBe("/settings?msg=removed");
+		expect(await listed()).toEqual(["http://localhost/callback"]);
+
+		const missing = await post("/settings/allowed-clients/remove", owner.cookie, { redirect_uri: CLAUDE, csrf_token: owner.csrf });
+		expect(missing.status).toBe(404);
+
+		expect((await ownerAudit()).map((row) => row.tool)).toEqual([
+			"allow_client_url",
+			"allow_client_url",
+			"remove_client_url",
+		]);
+	});
+
+	it("shows each registered client's redirect URLs as allowed or not on /clients", async () => {
+		mockGoogle();
+		await reset();
+		const owner = await signIn("/clients");
+		await post("/settings/allowed-clients", owner.cookie, { redirect_uri: CLAUDE, csrf_token: owner.csrf });
+		const register = await SELF.fetch(`${BASE}/register`, {
+			method: "POST",
+			headers: { "Content-Type": "application/json" },
+			body: JSON.stringify({
+				client_name: "Two URLs",
+				redirect_uris: [CLAUDE, "https://unlisted.example/cb"],
+				token_endpoint_auth_method: "none",
+			}),
+		});
+		expect(register.status).toBe(201);
+		const html = await (await get("/clients", owner.cookie)).text();
+		expect(html).toContain("<th>Redirect URLs</th>");
+		expect(html).toContain(`<span class="mono small">${CLAUDE}</span> <span class="badge badge-ok">Allowed</span>`);
+		expect(html).toContain(
+			'<span class="mono small">https://unlisted.example/cb</span> <span class="badge badge-alert">Not allowed</span>',
+		);
 	});
 });
