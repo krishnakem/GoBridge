@@ -205,6 +205,8 @@ export type AuditMeta = {
 	recipient?: string;
 	/** Owner renames on /link: the alias the account was moved to. */
 	newAlias?: string;
+	/** Owner changes on /settings: the redirect URL allowed or removed. */
+	redirectUri?: string;
 	/** Reads only: how many items came back. Never what they were. */
 	resultCount?: number;
 };
@@ -250,6 +252,7 @@ function sanitizeMeta(meta: AuditMeta): AuditMeta {
 		role: clip(meta.role, 20),
 		recipient: clip(meta.recipient, 254),
 		newAlias: clip(meta.newAlias, 32),
+		redirectUri: clip(meta.redirectUri, 512),
 	};
 }
 

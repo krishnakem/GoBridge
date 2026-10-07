@@ -1,6 +1,7 @@
-import OAuthProvider from "@cloudflare/workers-oauth-provider";
+import OAuthProvider, { type OAuthHelpers } from "@cloudflare/workers-oauth-provider";
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { McpAgent } from "agents/mcp";
+import { checkClient } from "./allowed-clients";
 import { isAllowedEmail } from "./auth";
 import { GoogleHandler } from "./google-handler";
 import { purgeOldAudit } from "./guardrails";
@@ -23,12 +24,27 @@ export class GoBridgeMCP extends McpAgent<Env, Record<string, never>, Props> {
 const mcpHandler = GoBridgeMCP.serve("/mcp");
 
 // Defense in depth: even with a valid GoBridge token, every /mcp request must
-// belong to the current ALLOWED_EMAIL (so changing the secret locks out old grants).
+// belong to the current ALLOWED_EMAIL (so changing the secret locks out old grants)
+// and come from a client that is still on the owner's allowed list (/settings),
+// so removing a client's redirect URL cuts it off at once. Both fail closed.
 const ownerOnlyMcpHandler = {
-	fetch(request: Request, env: Env, ctx: ExecutionContext<Props>) {
+	async fetch(request: Request, env: Env, ctx: ExecutionContext<Props>) {
 		if (!isAllowedEmail(ctx.props?.email, env.ALLOWED_EMAIL)) {
 			console.warn("/mcp denied: not_allowed");
 			return new Response("Forbidden", { status: 403 });
+		}
+		const helpers = (env as Env & { OAUTH_PROVIDER?: OAuthHelpers }).OAUTH_PROVIDER;
+		const clientId = ctx.props?.clientId;
+		const client = helpers && clientId ? await helpers.lookupClient(clientId) : null;
+		const verdict = await checkClient(env, client);
+		if (!verdict.ok) {
+			console.warn(`/mcp denied: client_${verdict.reason} client=${clientId ?? "unknown"}`);
+			return new Response(
+				verdict.reason === "list_unavailable"
+					? "GoBridge could not check its list of allowed apps. Try again in a moment."
+					: "Forbidden: this AI client is not on GoBridge's allowed list. The owner can add its redirect URL on /settings.",
+				{ status: verdict.reason === "list_unavailable" ? 503 : 403 },
+			);
 		}
 		return mcpHandler.fetch(request, env, ctx);
 	},
