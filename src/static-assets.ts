@@ -3,7 +3,8 @@
  * can stay at style-src 'self' and script-src 'self' (nothing inline).
  *
  *   GET /static/app.css   layout and components for every page
- *   GET /static/menu.js   keyboard + click behaviour for the account menu
+ *   GET /static/menu.js   keyboard + click behaviour for the account menu,
+ *                         and the profile-picture fallback
  *
  * These are public: they contain no data, no secrets, and nothing about the
  * owner. Nothing else is served under /static/.
@@ -29,16 +30,19 @@ p{margin:0 0 12px}
 .main-col{flex:1;min-width:0;display:flex;flex-direction:column}
 .topbar{position:sticky;top:0;z-index:20;display:flex;align-items:center;justify-content:space-between;height:52px;padding:0 4px 0 16px;background:#fff;border-bottom:1px solid #e4e4e7}
 .content{width:100%;max-width:960px;padding:20px 16px calc(80px + env(safe-area-inset-bottom))}
-.tabbar{position:fixed;left:0;right:0;bottom:0;z-index:10;display:grid;grid-template-columns:repeat(3,1fr);background:#fff;border-top:1px solid #e4e4e7;padding-bottom:env(safe-area-inset-bottom)}
+.tabbar{position:fixed;left:0;right:0;bottom:0;z-index:10;display:grid;grid-template-columns:repeat(4,1fr);background:#fff;border-top:1px solid #e4e4e7;padding-bottom:env(safe-area-inset-bottom)}
 .tabbar a{display:flex;flex-direction:column;align-items:center;justify-content:center;gap:2px;height:56px;font-size:11px;color:#71717a;text-decoration:none}
 .tabbar a[aria-current=page]{color:#0369a1;font-weight:500}
 
 /* Avatar and attention dot */
 .avatar-wrap{position:relative;display:inline-flex;flex:none}
-.avatar{display:flex;align-items:center;justify-content:center;border-radius:9999px;background:#e4e4e7;color:#3f3f46;font-weight:500;font-size:12px;line-height:1}
+.avatar{position:relative;display:flex;align-items:center;justify-content:center;overflow:hidden;border-radius:9999px;background:#e4e4e7;color:#3f3f46;font-weight:500;font-size:12px;line-height:1}
 .avatar-22{width:22px;height:22px;font-size:10px}
 .avatar-32{width:32px;height:32px}
-.dot{position:absolute;top:-1px;right:-1px;width:10px;height:10px;border-radius:9999px;background:#dc2626;box-shadow:0 0 0 2px #fff}
+/* The picture sits over the initial letter; a broken picture is hidden so the letter shows */
+.avatar-img{position:absolute;inset:0;width:100%;height:100%;object-fit:cover;border-radius:9999px}
+.avatar-img.failed{display:none}
+.dot{position:absolute;top:-1px;right:-1px;z-index:1;width:10px;height:10px;border-radius:9999px;background:#dc2626;box-shadow:0 0 0 2px #fff}
 .avatar-22+.dot{width:8px;height:8px}
 
 /* Account menu: a <details>, so it opens without JavaScript */
@@ -52,7 +56,7 @@ p{margin:0 0 12px}
 .account-row:hover,.account-menu[open]>.account-row{background:#fafafa}
 .account-row:focus-visible{outline:2px solid #0284c7}
 .account-row .avatar-wrap{margin-left:-2px}
-.account-email{min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.account-label{min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 .menu-backdrop{position:fixed;inset:0;z-index:30;background:rgba(24,24,27,.2)}
 .menu{position:fixed;left:0;right:0;bottom:0;z-index:40;background:#fff;border-top:1px solid #e4e4e7;border-radius:12px 12px 0 0;padding-top:8px;padding-bottom:max(8px,env(safe-area-inset-bottom))}
 .menu form{margin:0}
@@ -60,7 +64,7 @@ p{margin:0 0 12px}
 .menu-divider{height:1px;margin:4px 0;background:#f4f4f5}
 .menu-item{display:flex;align-items:center;justify-content:space-between;width:100%;height:48px;padding:0 16px;margin:0;border:0;border-radius:0;background:none;font:inherit;font-size:15px;color:#27272a;text-align:left;text-decoration:none;cursor:pointer}
 .menu-item:hover,.menu-item:focus{background:#fafafa;outline:none}
-.menu-flag{margin-left:12px;font-size:12px;color:#b91c1c;white-space:nowrap}
+.nav-flag{margin-left:auto;font-size:12px;color:#b91c1c;white-space:nowrap}
 
 /* Content components */
 .table-wrap{overflow-x:auto;margin:0 0 12px}
@@ -80,6 +84,9 @@ td:last-child,th:last-child{padding-right:0}
 .btn-primary:hover{background:#0369a1;border-color:#0369a1}
 .btn-danger{color:#b91c1c}
 form.inline{display:inline}
+form.inline input[type=text]{width:8rem;margin-right:4px}
+.account-cell{display:inline-flex;align-items:center;gap:8px;max-width:100%}
+.account-cell .avatar{flex:none}
 .field{display:flex;flex-wrap:wrap;align-items:center;gap:8px;margin:0 0 12px}
 input[type=text]{height:32px;width:14rem;max-width:100%;padding:0 10px;border:1px solid #e4e4e7;border-radius:6px;font:inherit;color:#18181b}
 .facts{display:grid;grid-template-columns:1fr;gap:2px 24px;margin:0 0 12px}
@@ -115,6 +122,17 @@ input[type=text]{height:32px;width:14rem;max-width:100%;padding:0 10px;border:1p
 
 export const MENU_JS = `(function () {
 	"use strict";
+	// Profile pictures: hide any that fail to load so the initial letter shows.
+	var pictures = document.querySelectorAll("img.avatar-img");
+	Array.prototype.forEach.call(pictures, function (img) {
+		function failed() {
+			img.className += " failed";
+		}
+		img.addEventListener("error", failed);
+		// Already finished (before this script ran) without any pixels: broken.
+		if (img.complete && img.naturalWidth === 0) failed();
+	});
+
 	var menus = document.querySelectorAll("details[data-account-menu]");
 	Array.prototype.forEach.call(menus, function (details) {
 		var trigger = details.querySelector("summary");
@@ -174,8 +192,23 @@ export const MENU_JS = `(function () {
 })();
 `;
 
+/**
+ * A short content hash, so the pages can link /static/app.css?v=<hash> and a
+ * browser never keeps an old stylesheet or script after a deploy.
+ */
+function contentHash(text: string): string {
+	let hash = 0x811c9dc5; // FNV-1a
+	for (let i = 0; i < text.length; i++) {
+		hash ^= text.charCodeAt(i);
+		hash = Math.imul(hash, 0x01000193) >>> 0;
+	}
+	return hash.toString(16).padStart(8, "0");
+}
+export const STATIC_VERSION = contentHash(APP_CSS + MENU_JS);
+
 const STATIC_HEADERS = {
-	"Cache-Control": "public, max-age=300",
+	// Safe to cache for a day: the pages link each file by content version.
+	"Cache-Control": "public, max-age=86400",
 	"X-Content-Type-Options": "nosniff",
 };
 

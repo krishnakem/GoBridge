@@ -41,6 +41,12 @@ function hasRequiredPkce(request: AuthRequest): boolean {
 // Health check: no data, no auth.
 app.get("/health", (c) => c.text("ok"));
 
+// The bare worker URL: a fixed redirect to /link (which requires owner sign-in).
+// No data, no cookies, and only GET; every other method on / is 404.
+app.get("/", (c) =>
+	c.body(null, 302, { "Cache-Control": "no-store", Location: "/link" }),
+);
+
 app.get("/authorize", async (c) => {
 	let oauthReqInfo: AuthRequest;
 	try {

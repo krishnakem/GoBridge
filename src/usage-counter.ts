@@ -20,6 +20,11 @@ export function counterWindow(kind: CounterKind, now: number): string {
 
 export type CounterUsage = Record<CounterKind, number>;
 
+/** One counter row as stored: which kind, which window, how many calls. */
+export type CounterRow = { kind: CounterKind; win: string; count: number };
+
+const KINDS: readonly CounterKind[] = ["read", "write", "send", "share"];
+
 export class UsageCounter extends DurableObject<Env> {
 	constructor(ctx: DurableObjectState, env: Env) {
 		super(ctx, env);
@@ -50,6 +55,43 @@ export class UsageCounter extends DurableObject<Env> {
 			count + 1,
 		);
 		return { allowed: true, count: count + 1 };
+	}
+
+	/**
+	 * Every stored row, for carrying usage over to a renamed alias. Changes nothing.
+	 */
+	snapshot(): CounterRow[] {
+		return this.ctx.storage.sql
+			.exec("SELECT kind, win, count FROM counters")
+			.toArray()
+			.filter((row) => KINDS.includes(row.kind as CounterKind))
+			.map((row) => ({
+				count: Number(row.count),
+				kind: row.kind as CounterKind,
+				win: String(row.win),
+			}));
+	}
+
+	/**
+	 * Merges rows from another alias's counter into this one: for each kind
+	 * still in its current window, this counter keeps the HIGHER of the two
+	 * counts. Counts can only go up, so a rename can never reset a limit.
+	 * Synchronous: no call can slip in between the read and the write.
+	 */
+	absorb(rows: CounterRow[]): void {
+		const now = Date.now();
+		for (const row of rows) {
+			if (!KINDS.includes(row.kind) || !Number.isInteger(row.count) || row.count < 0) continue;
+			const window = counterWindow(row.kind, now);
+			if (row.win !== window) continue;
+			const count = Math.max(this.current(row.kind), row.count);
+			this.ctx.storage.sql.exec(
+				"INSERT INTO counters (kind, win, count) VALUES (?, ?, ?) ON CONFLICT (kind) DO UPDATE SET win = excluded.win, count = excluded.count",
+				row.kind,
+				window,
+				count,
+			);
+		}
 	}
 
 	/** Current counts, for the /settings page. Changes nothing. */
