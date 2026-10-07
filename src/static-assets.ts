@@ -30,7 +30,7 @@ p{margin:0 0 12px}
 .main-col{flex:1;min-width:0;display:flex;flex-direction:column}
 .topbar{position:sticky;top:0;z-index:20;display:flex;align-items:center;justify-content:space-between;height:52px;padding:0 4px 0 16px;background:#fff;border-bottom:1px solid #e4e4e7}
 .content{width:100%;max-width:960px;padding:20px 16px calc(80px + env(safe-area-inset-bottom))}
-.tabbar{position:fixed;left:0;right:0;bottom:0;z-index:10;display:grid;grid-template-columns:repeat(3,1fr);background:#fff;border-top:1px solid #e4e4e7;padding-bottom:env(safe-area-inset-bottom)}
+.tabbar{position:fixed;left:0;right:0;bottom:0;z-index:10;display:grid;grid-template-columns:repeat(4,1fr);background:#fff;border-top:1px solid #e4e4e7;padding-bottom:env(safe-area-inset-bottom)}
 .tabbar a{display:flex;flex-direction:column;align-items:center;justify-content:center;gap:2px;height:56px;font-size:11px;color:#71717a;text-decoration:none}
 .tabbar a[aria-current=page]{color:#0369a1;font-weight:500}
 
@@ -56,7 +56,7 @@ p{margin:0 0 12px}
 .account-row:hover,.account-menu[open]>.account-row{background:#fafafa}
 .account-row:focus-visible{outline:2px solid #0284c7}
 .account-row .avatar-wrap{margin-left:-2px}
-.account-email{min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.account-label{min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 .menu-backdrop{position:fixed;inset:0;z-index:30;background:rgba(24,24,27,.2)}
 .menu{position:fixed;left:0;right:0;bottom:0;z-index:40;background:#fff;border-top:1px solid #e4e4e7;border-radius:12px 12px 0 0;padding-top:8px;padding-bottom:max(8px,env(safe-area-inset-bottom))}
 .menu form{margin:0}
@@ -64,7 +64,7 @@ p{margin:0 0 12px}
 .menu-divider{height:1px;margin:4px 0;background:#f4f4f5}
 .menu-item{display:flex;align-items:center;justify-content:space-between;width:100%;height:48px;padding:0 16px;margin:0;border:0;border-radius:0;background:none;font:inherit;font-size:15px;color:#27272a;text-align:left;text-decoration:none;cursor:pointer}
 .menu-item:hover,.menu-item:focus{background:#fafafa;outline:none}
-.menu-flag{margin-left:12px;font-size:12px;color:#b91c1c;white-space:nowrap}
+.nav-flag{margin-left:auto;font-size:12px;color:#b91c1c;white-space:nowrap}
 
 /* Content components */
 .table-wrap{overflow-x:auto;margin:0 0 12px}

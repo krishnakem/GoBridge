@@ -87,23 +87,25 @@ describe("owner page layout and account menu", () => {
 				expect(form).toContain(`<input type="hidden" name="csrf_token" value="${owner.csrf}">`);
 				expect(form).toMatch(/<button class="menu-item" role="menuitem" type="submit">Sign Out<\/button>/);
 			}
-			for (const item of ["/link", "/audit", "/clients", "/settings"]) {
-				expect(html).toContain(`<a class="menu-item" role="menuitem" href="${item}">`);
-			}
+			// The menu holds the email header and Sign Out only; pages live in the nav.
+			expect(html).not.toContain('class="menu-item" role="menuitem" href=');
+			expect(html.match(/role="menuitem"/g)).toHaveLength(2);
 			expect(html).toContain('<div class="menu-header">owner@example.com</div>');
 			expect(html).toContain('role="separator"');
+			// Without a name, the sidebar trigger shows the email.
+			expect(html).toContain('<span class="account-label">owner@example.com</span>');
+			for (const item of ["/link", "/audit", "/clients", "/settings"]) {
+				expect(html.match(new RegExp(`<a href="${item}"`, "g")), item).toHaveLength(2);
+			}
 			expect(html).toContain('aria-haspopup="menu" aria-label="Account"');
 			// Initial of the owner email, no profile photo.
 			expect(html).toContain('<span class="avatar avatar-22" aria-hidden="true">O</span>');
 			expect(html).not.toContain("<img");
 			expect(html).not.toContain("googleusercontent");
 
-			// Sidebar + bottom tabs, with the current page marked (Settings is menu-only).
-			const current = html.match(/aria-current="page"/g) ?? [];
-			expect(current.length, page).toBe(page === "/settings" ? 0 : 2);
-			if (page !== "/settings") {
-				expect(html).toContain(`<a href="${page}" aria-current="page">`);
-			}
+			// Sidebar + bottom tabs, with the current page marked.
+			expect(html.match(/aria-current="page"/g), page).toHaveLength(2);
+			expect(html).toContain(`<a href="${page}" aria-current="page">`);
 		}
 	});
 
@@ -166,7 +168,10 @@ describe("owner profile picture", () => {
 			);
 			// Only the picture is external, nothing else from the profile is rendered.
 			expect(html.match(/https?:\/\/(?!gobridge\.test)[^"'\s<]+/g)).toEqual([OWNER_PICTURE, OWNER_PICTURE]);
-			expect(html).not.toContain("Owner Name");
+			// The name appears on the sidebar trigger only; the menu header keeps the email.
+			expect(html.match(/Owner Name/g)).toHaveLength(1);
+			expect(html).toContain('<span class="account-label">Owner Name</span>');
+			expect(html).toContain('<div class="menu-header">owner@example.com</div>');
 			expect(html).not.toMatch(/\son[a-z]+=/i);
 			expect(html).not.toMatch(/\sstyle=/i);
 		}
@@ -182,13 +187,34 @@ describe("owner profile picture", () => {
 		expect(session.picture).toBeUndefined();
 		expect(session.name).toBeUndefined();
 		const record = await env.OAUTH_KV.get(`owner:session:${session.sid}`);
-		expect(JSON.parse(record!)).toEqual({ picture: OWNER_PICTURE });
+		expect(JSON.parse(record!)).toEqual({ name: "Owner Name", picture: OWNER_PICTURE });
 
 		// Sessions from before pictures existed still work and show the initial.
 		await env.OAUTH_KV.put(`owner:session:${session.sid}`, "1");
 		const old = await (await get("/link", owner.cookie)).text();
 		expect(old).toContain('<span class="avatar avatar-22" aria-hidden="true">O</span>');
 		expect(old).not.toContain("<img");
+		expect(old).not.toContain("Owner Name");
+		expect(old).toContain('<span class="account-label">owner@example.com</span>');
+	});
+
+	it("keeps the name to plain, bounded text and never logs it", async () => {
+		const spies = (["log", "info", "warn", "error"] as const).map((level) => vi.spyOn(console, level));
+		mockGoogle(undefined, {
+			...OWNER_CLAIMS,
+			name: `  <b>Owner</b>\n  Name ${"x".repeat(200)}`,
+			given_name: "GivenOnly",
+			locale: "en",
+		});
+		const owner = await signIn();
+		const html = await (await get("/link", owner.cookie)).text();
+		expect(html).toContain('<span class="account-label">&lt;b&gt;Owner&lt;/b&gt; Name ');
+		expect(html).not.toContain("<b>Owner</b>");
+		expect(html).not.toContain("GivenOnly");
+		expect(html.match(/account-label">[^<]*/)![0].length).toBeLessThan(140);
+		const logs = spies.flatMap((s) => s.mock.calls).flat().join("\n");
+		expect(logs).not.toContain("Owner");
+		expect(logs).not.toContain("googleusercontent");
 	});
 
 	it("ignores a picture that is not an https URL on Google's picture host", async () => {
@@ -358,7 +384,7 @@ describe("attention dot", () => {
 		const fine = await (await get("/audit", owner.cookie)).text();
 		expect(fine).not.toContain('class="dot"');
 		expect(fine).not.toContain("needs attention");
-		expect(fine).not.toContain("menu-flag");
+		expect(fine).not.toContain("nav-flag");
 
 		for (const value of ["false", "", "TRUE"]) {
 			const res = await getWithEnv("/settings", owner.cookie, { WRITES_ENABLED: value });
@@ -367,7 +393,9 @@ describe("attention dot", () => {
 			expect(html.match(/<span class="dot"><\/span>/g), `"${value}"`).toHaveLength(2);
 			expect(html.match(/aria-label="Account \(needs attention\)"/g)).toHaveLength(2);
 			expect(html).not.toContain('aria-haspopup="menu" aria-label="Account"');
-			expect(html).toContain('<span>Settings</span><span class="menu-flag">Writes off</span>');
+			// The flag sits on the sidebar's Settings link only (the tab bar has no room).
+			expect(html.match(/<span>Settings<\/span><span class="nav-flag">Writes off<\/span>/g)).toHaveLength(1);
+			expect(html).not.toContain("menu-flag");
 			expect(html).toContain('<span class="badge badge-alert">Off</span>');
 		}
 	});
@@ -393,11 +421,11 @@ describe("attention dot", () => {
 		const html = await (await get("/link", owner.cookie)).text();
 		expect(html.match(/<span class="dot"><\/span>/g)).toHaveLength(2);
 		expect(html).toContain('aria-label="Account (needs attention)"');
-		expect(html).toContain('<span class="menu-flag">Re-link needed</span>');
+		expect(html).toContain('<span class="nav-flag">Re-link needed</span>');
 		expect(html).toContain('<span class="badge badge-alert">Needs re-link</span>');
 		// "Writes off" wins when both apply.
 		const both = await (await getWithEnv("/settings", owner.cookie, { WRITES_ENABLED: "false" })).text();
-		expect(both).toContain('<span class="menu-flag">Writes off</span>');
+		expect(both).toContain('<span class="nav-flag">Writes off</span>');
 		expect(both).toContain("Needs re-link: stale-acct");
 
 		// A flag for an alias that is not linked is ignored; linking again clears the flag.
@@ -425,6 +453,7 @@ describe("stale scopes", () => {
 		expect(html).not.toContain('class="dot"');
 		expect(html).not.toContain("Re-link needed");
 		expect(html).not.toContain("Needs re-link");
+		expect(html).not.toContain("nav-flag");
 		// The initial-letter avatar stands in for the missing picture.
 		expect(html).toContain('<span class="avatar avatar-22" aria-hidden="true">N</span>');
 		const settings = await (await get("/settings", owner.cookie)).text();
@@ -458,7 +487,7 @@ describe("stale scopes", () => {
 		});
 		const owner = await signIn();
 		const html = await (await get("/link", owner.cookie)).text();
-		expect(html).toContain('<span class="menu-flag">Re-link needed</span>');
+		expect(html).toContain('<span class="nav-flag">Re-link needed</span>');
 		expect(html).toContain("Needs re-link: old-scopes");
 		const settings = await (await get("/settings", owner.cookie)).text();
 		expect(settings).toContain("DIRECT_SEND_ENABLED");
@@ -471,7 +500,7 @@ describe("stale scopes", () => {
 		const owner = await signIn();
 		const html = await (await getWithEnv("/settings", owner.cookie, { FORWARD_ENABLED: "false" } as Partial<Env>)).text();
 		expect(html.match(/<span class="dot"><\/span>/g)).toHaveLength(2);
-		expect(html).toContain('<span class="menu-flag">Feature off</span>');
+		expect(html).toContain('<span class="nav-flag">Feature off</span>');
 		expect(html).toContain("Switched off: FORWARD_ENABLED");
 	});
 });
