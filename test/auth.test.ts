@@ -205,6 +205,58 @@ describe("unauthenticated access", () => {
 		}
 	});
 
+	it("redirects GET / to /link with no data, and nothing else on /", async () => {
+		const res = await SELF.fetch(`${BASE}/`, { redirect: "manual" });
+		expect(res.status).toBe(302);
+		expect(res.headers.get("Location")).toBe("/link");
+		expect(res.headers.get("Cache-Control")).toBe("no-store");
+		expect(res.headers.getSetCookie()).toHaveLength(0);
+		expect(await res.text()).toBe("");
+		// Query strings and a session cookie change nothing: it is a fixed redirect.
+		const withQuery = await SELF.fetch(`${BASE}/?next=/audit`, {
+			redirect: "manual",
+			headers: { Cookie: "__Host-GOBRIDGE_SESSION=forged.value" },
+		});
+		expect(withQuery.status).toBe(302);
+		expect(withQuery.headers.get("Location")).toBe("/link");
+		for (const method of ["POST", "PUT", "DELETE", "PATCH"]) {
+			const other = await SELF.fetch(`${BASE}/`, { method, redirect: "manual" });
+			expect(other.status, method).toBe(404);
+			expect(other.headers.get("Location")).toBeNull();
+		}
+	});
+
+	it("serves exactly the allowlisted routes without a session", async () => {
+		// Unauthenticated routes allowed by CLAUDE.md, with what each must answer.
+		const allowed: [string, number][] = [
+			["/", 302],
+			["/health", 200],
+			["/signed-out", 200],
+			["/static/app.css", 200],
+			["/static/menu.js", 200],
+			["/.well-known/oauth-authorization-server", 200],
+			["/.well-known/oauth-protected-resource/mcp", 200],
+			["/logout", 405],
+		];
+		for (const [path, status] of allowed) {
+			const res = await SELF.fetch(`${BASE}${path}`, { redirect: "manual" });
+			expect(res.status, path).toBe(status);
+			expect(res.headers.getSetCookie(), path).toHaveLength(0);
+			await res.body?.cancel();
+		}
+		// Owner pages never show content without a session: they go to Google sign-in.
+		for (const path of ["/link", "/audit", "/clients", "/settings"]) {
+			const res = await SELF.fetch(`${BASE}${path}`, { redirect: "manual" });
+			expect(res.status, path).toBe(302);
+			expect(new URL(res.headers.get("Location")!).hostname).toBe("accounts.google.com");
+			expect(await res.text()).toBe("");
+		}
+		for (const path of ["/link/rename", "/link/unlink", "/clients/revoke"]) {
+			const res = await SELF.fetch(`${BASE}${path}`, { method: "POST", redirect: "manual" });
+			expect(res.status, path).toBe(403);
+		}
+	});
+
 	it("serves a health check with no data", async () => {
 		const res = await SELF.fetch(`${BASE}/health`);
 		expect(res.status).toBe(200);

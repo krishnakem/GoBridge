@@ -18,17 +18,22 @@ type StoredAccount = {
 	sub: string;
 	scopes: string[];
 	linkedAt: string;
+	/** Google profile picture URL (allowed host only), shown on /link. Never logged. */
+	picture?: string;
 	/** AES-256-GCM encrypted refresh token */
 	iv: string;
 	ciphertext: string;
 };
 
 /** What the rest of the app may see about an account. Never includes token material. */
-export type AccountInfo = Pick<StoredAccount, "alias" | "email" | "sub" | "scopes" | "linkedAt">;
+export type AccountInfo = Pick<
+	StoredAccount,
+	"alias" | "email" | "sub" | "scopes" | "linkedAt" | "picture"
+>;
 
 function toInfo(record: StoredAccount): AccountInfo {
-	const { alias, email, sub, scopes, linkedAt } = record;
-	return { alias, email, linkedAt, scopes, sub };
+	const { alias, email, sub, scopes, linkedAt, picture } = record;
+	return { alias, email, linkedAt, scopes, sub, ...(picture ? { picture } : {}) };
 }
 
 async function readRecord(env: Env, alias: string): Promise<StoredAccount | null> {
@@ -64,7 +69,14 @@ export async function listAccounts(env: Env): Promise<AccountInfo[]> {
 
 export async function saveAccount(
 	env: Env,
-	account: { alias: string; email: string; sub: string; scopes: string[]; refreshToken: string },
+	account: {
+		alias: string;
+		email: string;
+		sub: string;
+		scopes: string[];
+		refreshToken: string;
+		picture?: string;
+	},
 ): Promise<void> {
 	if (!ALIAS_PATTERN.test(account.alias)) throw new Error("invalid alias");
 	const encrypted = await encryptSecret(
@@ -81,9 +93,52 @@ export async function saveAccount(
 		scopes: account.scopes,
 		sub: account.sub,
 		v: 1,
+		...(account.picture ? { picture: account.picture } : {}),
 	};
 	await env.GOOGLE_TOKENS.put(`${KEY_PREFIX}${account.alias}`, JSON.stringify(record));
 	await env.GOOGLE_TOKENS.delete(`${RELINK_PREFIX}${account.alias}`);
+}
+
+export type RenameOutcome = "ok" | "unknown_alias" | "alias_in_use" | "same_alias";
+
+/**
+ * Moves an account record from one alias to another, keeping everything in
+ * it (email, scopes, link date, picture, encrypted refresh token). The token
+ * is bound to its alias by the encryption, so it is decrypted in memory and
+ * encrypted again under the new alias; it is never logged or returned.
+ *
+ * Order matters: the new key is written first and the old key deleted only
+ * afterwards, so a failure part-way can leave a duplicate but never a loss.
+ * A pending "re-link needed" flag follows the account.
+ */
+export async function renameAccount(
+	env: Env,
+	alias: string,
+	newAlias: string,
+): Promise<RenameOutcome> {
+	if (!ALIAS_PATTERN.test(alias) || !ALIAS_PATTERN.test(newAlias)) return "unknown_alias";
+	if (alias === newAlias) return "same_alias";
+	const record = await readRecord(env, alias);
+	if (!record) return "unknown_alias";
+	if (await env.GOOGLE_TOKENS.get(`${KEY_PREFIX}${newAlias}`)) return "alias_in_use";
+
+	const refreshToken = await decryptSecret(record, env.TOKEN_ENCRYPTION_KEY, alias);
+	const encrypted = await encryptSecret(refreshToken, env.TOKEN_ENCRYPTION_KEY, newAlias);
+	const moved: StoredAccount = {
+		...record,
+		alias: newAlias,
+		ciphertext: encrypted.ciphertext,
+		iv: encrypted.iv,
+	};
+	await env.GOOGLE_TOKENS.put(`${KEY_PREFIX}${newAlias}`, JSON.stringify(moved));
+	await env.GOOGLE_TOKENS.delete(`${KEY_PREFIX}${alias}`);
+
+	const flagged = await env.GOOGLE_TOKENS.get(`${RELINK_PREFIX}${alias}`);
+	if (flagged) {
+		await env.GOOGLE_TOKENS.put(`${RELINK_PREFIX}${newAlias}`, flagged);
+		await env.GOOGLE_TOKENS.delete(`${RELINK_PREFIX}${alias}`);
+	}
+	return "ok";
 }
 
 /** Remembers that this account must be linked again (shown on the owner pages). */

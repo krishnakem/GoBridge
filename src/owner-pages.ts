@@ -58,6 +58,7 @@ function auditDetails(entry: AuditEntry): string {
 	if (meta.fileId) parts.push(`File id: ${meta.fileId}`);
 	if (meta.parentId) parts.push(`Folder id: ${meta.parentId}`);
 	if (meta.recipient) parts.push(`Shared with: ${meta.recipient}${meta.role ? ` (${meta.role})` : ""}`);
+	if (meta.newAlias) parts.push(`Renamed to: ${meta.newAlias}`);
 	if (meta.resultCount !== undefined) parts.push(`Items returned: ${meta.resultCount}`);
 	return parts.map(escapeHtml).join("<br>");
 }

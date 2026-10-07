@@ -7,7 +7,7 @@ Personal project, shared as a reference. Not a hosted service; deploy your own c
 ## What it does
 
 - 51 MCP tools matching the names and parameters of Google's own Gmail (30), Calendar (9) and Drive (11) connectors, plus `list_accounts`. Every tool takes an account alias.
-- Link any number of Google accounts on an owner-only `/link` page; refresh tokens are stored encrypted (AES-256-GCM).
+- Link any number of Google accounts on an owner-only `/link` page (rename or unlink them there too); refresh tokens are stored encrypted (AES-256-GCM).
 - Only one Google account (the owner, set in a secret) can sign in. OAuth 2.1 with PKCE S256 for AI clients.
 
 ## Guardrails
@@ -34,7 +34,7 @@ TypeScript · Cloudflare Workers, KV, D1, Durable Objects · `@cloudflare/worker
 4. `npm install`, then `npm run migrate:dev` and `npm run deploy:dev`.
 5. Open `/link`, link your accounts, then add `https://<your-worker>.<your-subdomain>.workers.dev/mcp` as a custom connector in your AI client.
 
-The Google app will be unverified. Scopes requested: `gmail.modify`, `gmail.send`, `calendar.events`, `calendar.calendarlist.readonly`, `calendar.freebusy`, `drive`, `openid`, `email`.
+The Google app will be unverified. Scopes requested when linking an account: `gmail.modify`, `gmail.send`, `calendar.events`, `calendar.calendarlist.readonly`, `calendar.freebusy`, `drive`, `openid`, `email`, `profile` (picture URL only). Owner sign-in for the owner pages uses `openid`, `email`, `profile`; AI-client sign-in uses `openid`, `email`.
 
 ## Development
 

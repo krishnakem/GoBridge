@@ -783,6 +783,8 @@ describe("Calendar", () => {
 	it("suggest_time queries free/busy and returns free working-hour slots", async () => {
 		const { alias, email } = await linked();
 		const calls = mockGoogle();
+		// Slots before "now" are never suggested, so pin the clock before the searched day.
+		vi.setSystemTime(new Date("2026-10-05T12:00:00Z"));
 		const res = await call("suggest_time", {
 			account: alias,
 			attendeeEmails: ["boss@example.com"],
@@ -804,6 +806,7 @@ describe("Calendar", () => {
 		const mon = Date.UTC(2026, 9, 12, 13, 0); // Monday 09:00 Detroit
 		const slots = findFreeSlots(mon, mon + 3 * 3_600_000, 30, [{ end: mon + 3_600_000, start: mon }], "America/Detroit", { endHour: 17, excludeWeekends: true, pageSize: 3, startHour: 9 });
 		expect(slots.map((s) => (s.start - mon) / 60_000)).toEqual([60, 90, 120]);
+		vi.useRealTimers();
 	});
 });
 

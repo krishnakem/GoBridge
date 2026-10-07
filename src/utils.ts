@@ -6,6 +6,14 @@
 export const OWNER_LOGIN_SCOPES = ["openid", "email"] as const;
 
 /**
+ * Scopes for the owner-page sign-in (/link, /audit, /clients, /settings).
+ * `profile` (owner-approved 2026-10-07) is used for exactly one thing: the
+ * `picture` URL shown in the account menu. The name and every other profile
+ * field are dropped. AI-client grants keep OWNER_LOGIN_SCOPES.
+ */
+export const OWNER_PAGE_LOGIN_SCOPES = [...OWNER_LOGIN_SCOPES, "profile"] as const;
+
+/**
  * Constructs an authorization URL for an upstream service.
  *
  * @param {Object} options
