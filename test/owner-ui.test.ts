@@ -12,7 +12,9 @@ const BASE = "https://gobridge.test";
 const OWNER_CLAIMS = { sub: "owner-sub-1", email: "owner@example.com", email_verified: true };
 const OWNER_PICTURE = "https://lh3.googleusercontent.com/a/owner-picture=s96-c";
 const OWNER_PAGES = ["/link", "/audit", "/clients", "/settings"];
-const PICTURE_IMG = `<img class="avatar-img" src="${OWNER_PICTURE}" alt="" referrerpolicy="no-referrer">`;
+const pictureImg = (size: number) =>
+	`<img class="avatar-img" src="${OWNER_PICTURE}" alt="" width="${size}" height="${size}" referrerpolicy="no-referrer">`;
+const PICTURE_IMG = pictureImg(32);
 
 /** Fake Google for owner sign-in. `refreshStatus` makes refresh-token exchanges fail. */
 function mockGoogle(refreshStatus?: number, claims: Record<string, unknown> = OWNER_CLAIMS) {
@@ -128,8 +130,8 @@ describe("owner page layout and account menu", () => {
 			expect(res.headers.get("Referrer-Policy")).toBe("no-referrer");
 
 			const html = await res.text();
-			expect(html).toContain('<link rel="stylesheet" href="/static/app.css">');
-			expect(html).toContain('<script src="/static/menu.js" defer></script>');
+			expect(html).toMatch(/<link rel="stylesheet" href="\/static\/app\.css\?v=[0-9a-f]{8}">/);
+			expect(html).toMatch(/<script src="\/static\/menu\.js\?v=[0-9a-f]{8}" defer><\/script>/);
 			// No inline scripts, inline styles, or inline event handlers.
 			expect(html.match(/<script/g)).toHaveLength(1);
 			expect(html).not.toMatch(/<style/i);
@@ -157,7 +159,7 @@ describe("owner profile picture", () => {
 			const html = await (await get(page, owner.cookie)).text();
 			expect(html.match(/<img /g), page).toHaveLength(2);
 			expect(html).toContain(
-				`<span class="avatar avatar-22" aria-hidden="true">${PICTURE_IMG}O</span>`,
+				`<span class="avatar avatar-22" aria-hidden="true">${pictureImg(22)}O</span>`,
 			);
 			expect(html).toContain(
 				`<span class="avatar avatar-32" aria-hidden="true">${PICTURE_IMG}O</span>`,
@@ -170,7 +172,9 @@ describe("owner profile picture", () => {
 		}
 		// The attention dot still renders, after the image, inside the same wrapper.
 		const html = await (await getWithEnv("/settings", owner.cookie, { WRITES_ENABLED: "false" })).text();
-		expect(html.match(new RegExp(`${PICTURE_IMG.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}O</span><span class="dot"></span>`, "g"))).toHaveLength(2);
+		for (const size of [22, 32]) {
+			expect(html, `avatar-${size}`).toContain(`${pictureImg(size)}O</span><span class="dot"></span>`);
+		}
 
 		// The server-side record holds the picture; the cookie does not.
 		const sealed = owner.cookie.split("__Host-GOBRIDGE_SESSION=")[1].split(";")[0];

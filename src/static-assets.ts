@@ -192,8 +192,23 @@ export const MENU_JS = `(function () {
 })();
 `;
 
+/**
+ * A short content hash, so the pages can link /static/app.css?v=<hash> and a
+ * browser never keeps an old stylesheet or script after a deploy.
+ */
+function contentHash(text: string): string {
+	let hash = 0x811c9dc5; // FNV-1a
+	for (let i = 0; i < text.length; i++) {
+		hash ^= text.charCodeAt(i);
+		hash = Math.imul(hash, 0x01000193) >>> 0;
+	}
+	return hash.toString(16).padStart(8, "0");
+}
+export const STATIC_VERSION = contentHash(APP_CSS + MENU_JS);
+
 const STATIC_HEADERS = {
-	"Cache-Control": "public, max-age=300",
+	// Safe to cache for a day: the pages link each file by content version.
+	"Cache-Control": "public, max-age=86400",
 	"X-Content-Type-Options": "nosniff",
 };
 
