@@ -1,8 +1,10 @@
 import { env, SELF } from "cloudflare:test";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { getRefreshToken } from "../src/accounts";
+import { getAccount, getRefreshToken, markNeedsRelink, aliasesNeedingRelink } from "../src/accounts";
 import { decryptSecret, encryptSecret, sha256Base64Url } from "../src/crypto";
-import { grantedScopesMatch, LINK_SCOPES } from "../src/google";
+import { grantedScopesMatch, hasCurrentScopes, LINK_SCOPES, TOOL_SCOPES } from "../src/google";
+import { listAudit, writeUsage } from "../src/guardrails";
+import { LinkHandler } from "../src/link-handler";
 
 const BASE = "https://gobridge.test";
 // Shaped like real Google tokens so leak checks are meaningful.
@@ -19,8 +21,9 @@ const ALLOWED_SCOPES = [
 	"https://www.googleapis.com/auth/drive",
 	"openid",
 	"email",
+	"profile",
 ];
-// How Google reports a full grant: `email` comes back under its long name.
+// How Google reports a full grant: `email` and `profile` come back under their long names.
 const GOOGLE_FULL_GRANT = [
 	"https://www.googleapis.com/auth/gmail.modify",
 	"https://www.googleapis.com/auth/gmail.send",
@@ -30,9 +33,19 @@ const GOOGLE_FULL_GRANT = [
 	"https://www.googleapis.com/auth/drive",
 	"openid",
 	"https://www.googleapis.com/auth/userinfo.email",
+	"https://www.googleapis.com/auth/userinfo.profile",
 ].join(" ");
 
-const OWNER_CLAIMS = { sub: "owner-sub-1", email: "owner@example.com", email_verified: true };
+const OWNER_PICTURE = "https://lh3.googleusercontent.com/a/owner-picture=s96-c";
+const OWNER_CLAIMS = {
+	sub: "owner-sub-1",
+	email: "owner@example.com",
+	email_verified: true,
+	name: "Owner Name",
+	picture: OWNER_PICTURE,
+};
+const pictureFor = (n: number) => `https://lh3.googleusercontent.com/a/linked-picture-${n}=s96-c`;
+const AUDIT_CLIENT = { clientId: "client-link-test", clientName: "Claude" };
 
 type GoogleOptions = {
 	ownerClaims?: Record<string, unknown>;
@@ -55,7 +68,15 @@ function fresh() {
 	counter += 1;
 	return {
 		alias: `acct-${counter}`,
-		claims: { sub: `linked-sub-${counter}`, email: `linked${counter}@example.com`, email_verified: true },
+		claims: {
+			sub: `linked-sub-${counter}`,
+			email: `linked${counter}@example.com`,
+			email_verified: true,
+			name: `Linked Person ${counter}`,
+			given_name: "Linked",
+			picture: pictureFor(counter),
+		},
+		picture: pictureFor(counter),
 	};
 }
 
@@ -223,6 +244,17 @@ describe("link scopes", () => {
 		expect([...LINK_SCOPES]).toEqual(ALLOWED_SCOPES);
 	});
 
+	it("treat profile as optional for accounts linked before it was added", () => {
+		expect(hasCurrentScopes([...LINK_SCOPES])).toBe(true);
+		expect(hasCurrentScopes([...TOOL_SCOPES, "openid", "email"])).toBe(true);
+		expect(hasCurrentScopes([...TOOL_SCOPES])).toBe(true);
+		for (const needed of TOOL_SCOPES) {
+			expect(hasCurrentScopes(LINK_SCOPES.filter((s) => s !== needed)), needed).toBe(false);
+		}
+		expect(hasCurrentScopes([])).toBe(false);
+		expect(hasCurrentScopes(undefined)).toBe(false);
+	});
+
 	it("never include forbidden scopes", () => {
 		for (const scope of LINK_SCOPES) {
 			expect(scope).not.toBe("https://mail.google.com/");
@@ -236,6 +268,8 @@ describe("link scopes", () => {
 		expect(grantedScopesMatch(GOOGLE_FULL_GRANT)).toBe(true);
 		expect(grantedScopesMatch(ALLOWED_SCOPES.join(" "))).toBe(true);
 		expect(grantedScopesMatch(ALLOWED_SCOPES.slice(1).join(" "))).toBe(false);
+		// A new link must grant profile too; only already-stored accounts may lack it.
+		expect(grantedScopesMatch(ALLOWED_SCOPES.filter((s) => s !== "profile").join(" "))).toBe(false);
 		expect(grantedScopesMatch(`${GOOGLE_FULL_GRANT} https://mail.google.com/`)).toBe(false);
 		expect(grantedScopesMatch("")).toBe(false);
 		expect(grantedScopesMatch(undefined)).toBe(false);
@@ -248,7 +282,7 @@ describe("owner session", () => {
 		expect(res.status).toBe(302);
 		const google = new URL(res.headers.get("Location")!);
 		expect(google.origin).toBe("https://accounts.google.com");
-		expect(google.searchParams.get("scope")).toBe("openid email");
+		expect(google.searchParams.get("scope")).toBe("openid email profile");
 		expect(google.searchParams.get("redirect_uri")).toBe(`${BASE}/callback`);
 		expect(await res.text()).toBe("");
 	});
@@ -407,6 +441,12 @@ describe("linking an account", () => {
 		expect(record.scopes).toEqual(ALLOWED_SCOPES);
 		expect(record.iv).toBeTruthy();
 		expect(record.ciphertext).toBeTruthy();
+		// Only the picture URL from the profile, never the name or anything else.
+		expect(record.picture).toBe(claims.picture);
+		expect(Object.keys(record).sort()).toEqual(
+			["alias", "ciphertext", "email", "iv", "linkedAt", "picture", "scopes", "sub", "v"],
+		);
+		expect(raw).not.toContain("Linked Person");
 
 		// ...and decrypts back to the real token, server-side only.
 		expect(await getRefreshToken(env, alias)).toBe(FAKE_REFRESH_TOKEN);
@@ -417,6 +457,34 @@ describe("linking an account", () => {
 		expect(page).toContain(claims.email);
 		expect(page).not.toContain(FAKE_REFRESH_TOKEN);
 		expect(page).not.toContain(record.ciphertext);
+		// The account's picture sits left of its email; no name, no inline handlers.
+		expect(page).toContain(
+			`<span class="account-cell"><span class="avatar avatar-22" aria-hidden="true"><img class="avatar-img" src="${claims.picture}" alt="" referrerpolicy="no-referrer">L</span><span>${claims.email}</span></span>`,
+		);
+		expect(page).not.toContain("Linked Person");
+		expect(page).not.toMatch(/\son[a-z]+=/i);
+	});
+
+	it("stores no picture when Google sends none or an unexpected one", async () => {
+		const noPicture = fresh();
+		mockGoogle({ linkedClaims: { ...noPicture.claims, picture: undefined } });
+		const session = await ownerSession();
+		expect((await linkAccount(session, noPicture.alias)).res.status).toBe(303);
+		expect(JSON.parse((await stored(noPicture.alias))!).picture).toBeUndefined();
+
+		const badPicture = fresh();
+		vi.mocked(globalThis.fetch).mockRestore();
+		mockGoogle({ linkedClaims: { ...badPicture.claims, picture: "https://evil.example/x.png" } });
+		expect((await linkAccount(session, badPicture.alias)).res.status).toBe(303);
+		const raw = (await stored(badPicture.alias))!;
+		expect(JSON.parse(raw).picture).toBeUndefined();
+		expect(raw).not.toContain("evil.example");
+
+		const page = await (await SELF.fetch(`${BASE}/link`, { headers: { Cookie: session.cookie } })).text();
+		expect(page).toContain(
+			`<span class="avatar avatar-22" aria-hidden="true">L</span><span>${noPicture.claims.email}</span>`,
+		);
+		expect(page).not.toContain("evil.example");
 	});
 
 	it("rejects invalid aliases", async () => {
@@ -522,6 +590,214 @@ describe("linking an account", () => {
 	});
 });
 
+describe("renaming an account", () => {
+	const counterFor = (alias: string) => env.USAGE_COUNTER.get(env.USAGE_COUNTER.idFromName(alias));
+	const rename = (session: { cookie: string; csrf: string }, alias: string, newAlias: string) =>
+		post("/link/rename", session.cookie, { alias, newAlias, csrf_token: session.csrf });
+	const renameAudit = async () =>
+		(await listAudit(env, 1000, "write")).filter((e) => e.tool === "rename_account");
+
+	it("moves the record, token, picture and re-link flag to the new alias, and audits it", async () => {
+		const { alias, claims, picture } = fresh();
+		const calls = mockGoogle({ linkedClaims: claims });
+		const session = await ownerSession();
+		expect((await linkAccount(session, alias)).res.status).toBe(303);
+		const before = JSON.parse((await stored(alias))!);
+		await markNeedsRelink(env, alias);
+		const newAlias = `${alias}-renamed`;
+		const auditBefore = (await renameAudit()).length;
+
+		const res = await rename(session, alias, newAlias);
+		expect(res.status).toBe(303);
+		expect(res.headers.get("Location")).toBe("/link?msg=renamed");
+
+		// Old key gone, new key holds the same account under the new alias.
+		expect(await stored(alias)).toBeNull();
+		const raw = (await stored(newAlias))!;
+		const after = JSON.parse(raw);
+		expect(after).toMatchObject({
+			alias: newAlias,
+			email: claims.email,
+			linkedAt: before.linkedAt,
+			picture,
+			scopes: ALLOWED_SCOPES,
+			sub: claims.sub,
+			v: 1,
+		});
+		expect(Object.keys(after).sort()).toEqual(Object.keys(before).sort());
+		// Re-encrypted under the new alias: new IV, still no plaintext, still decrypts.
+		expect(after.iv).not.toBe(before.iv);
+		expect(raw).not.toContain(FAKE_REFRESH_TOKEN);
+		expect(raw).not.toContain("1//");
+		expect(await getRefreshToken(env, newAlias)).toBe(FAKE_REFRESH_TOKEN);
+		expect(await getAccount(env, alias)).toBeNull();
+		// Nothing was revoked at Google: the account keeps its access.
+		expect(calls.revoked).toHaveLength(0);
+		// The pending re-link flag followed the account.
+		const flagged = await aliasesNeedingRelink(env);
+		expect(flagged).toContain(newAlias);
+		expect(flagged).not.toContain(alias);
+
+		// Exactly one audit row: old alias -> new alias, and nothing else.
+		const rows = await renameAudit();
+		expect(rows).toHaveLength(auditBefore + 1);
+		expect(rows[0]).toMatchObject({
+			alias,
+			clientId: "owner",
+			clientName: "Owner (/link)",
+			outcome: "ok",
+			tool: "rename_account",
+		});
+		expect(Object.entries(rows[0].meta).filter(([, v]) => v !== undefined)).toEqual([["newAlias", newAlias]]);
+
+		const page = await (await SELF.fetch(`${BASE}/link?msg=renamed`, { headers: { Cookie: session.cookie } })).text();
+		expect(page).toContain("Account renamed.");
+		expect(page).toContain(`<strong>${newAlias}</strong>`);
+		expect(page).not.toContain(`<strong>${alias}</strong>`);
+		const audit = await (await SELF.fetch(`${BASE}/audit`, { headers: { Cookie: session.cookie } })).text();
+		expect(audit).toContain("<strong>rename_account</strong>");
+		expect(audit).toContain(`Renamed to: ${newAlias}`);
+	});
+
+	it("carries the current hour's and day's usage over, so limits cannot be reset", async () => {
+		const { alias, claims } = fresh();
+		mockGoogle({ linkedClaims: claims });
+		const session = await ownerSession();
+		expect((await linkAccount(session, alias)).res.status).toBe(303);
+		const old = counterFor(alias);
+		for (let i = 0; i < 3; i++) await old.take("send", 25);
+		for (let i = 0; i < 2; i++) await old.take("share", 10);
+		for (let i = 0; i < 7; i++) await old.take("write", 60);
+		for (let i = 0; i < 11; i++) await old.take("read", 300);
+		const newAlias = `${alias}-moved`;
+		// The new alias has some usage of its own already (an earlier account): the higher count wins.
+		await counterFor(newAlias).take("write", 60);
+		for (let i = 0; i < 4; i++) await counterFor(newAlias).take("send", 25);
+
+		expect((await rename(session, alias, newAlias)).status).toBe(303);
+		expect(await writeUsage(env, newAlias)).toEqual({
+			readsThisHour: 11,
+			sendsToday: 4,
+			sharesToday: 2,
+			writesThisHour: 7,
+		});
+		// Renaming back carries them again rather than starting from zero.
+		expect((await rename(session, newAlias, alias)).status).toBe(303);
+		expect(await writeUsage(env, alias)).toEqual({
+			readsThisHour: 11,
+			sendsToday: 4,
+			sharesToday: 2,
+			writesThisHour: 7,
+		});
+	});
+
+	it("refuses the rename and changes nothing when the usage counter cannot be carried over", async () => {
+		const { alias, claims } = fresh();
+		mockGoogle({ linkedClaims: claims });
+		const session = await ownerSession();
+		expect((await linkAccount(session, alias)).res.status).toBe(303);
+		const before = await stored(alias);
+		const newAlias = `${alias}-stuck`;
+		const broken = [
+			{ idFromName: () => { throw new Error("namespace down"); } },
+			{ get: () => ({ snapshot: () => Promise.reject(new Error("read failed")), absorb: () => Promise.resolve() }), idFromName: () => ({}) },
+			{ get: () => ({ snapshot: () => Promise.resolve([]), absorb: () => Promise.reject(new Error("write failed")) }), idFromName: () => ({}) },
+			{ get: () => ({ snapshot: () => Promise.resolve("nonsense"), absorb: () => Promise.resolve() }), idFromName: () => ({}) },
+			undefined,
+		];
+		for (const USAGE_COUNTER of broken) {
+			const res = await LinkHandler.fetch(
+				new Request(`${BASE}/link/rename`, {
+					method: "POST",
+					headers: { "Content-Type": "application/x-www-form-urlencoded", Cookie: session.cookie },
+					body: new URLSearchParams({ alias, newAlias, csrf_token: session.csrf }).toString(),
+				}),
+				{ ...env, USAGE_COUNTER } as unknown as Env,
+			);
+			expect(res.status).toBe(502);
+			expect(await res.text()).toContain("nothing was renamed");
+			expect(await stored(alias)).toBe(before);
+			expect(await stored(newAlias)).toBeNull();
+		}
+		expect(await renameAudit()).not.toContainEqual(expect.objectContaining({ alias }));
+		const logs = allLogOutput();
+		expect(logs).toContain("carry_over_failed");
+		expect(logs).not.toContain("namespace down");
+	});
+
+	it("refuses a collision, an unknown alias, an invalid or unchanged alias, and changes nothing", async () => {
+		const first = fresh();
+		const second = fresh();
+		mockGoogle({ linkedClaims: first.claims });
+		const session = await ownerSession();
+		expect((await linkAccount(session, first.alias)).res.status).toBe(303);
+		vi.mocked(globalThis.fetch).mockRestore();
+		mockGoogle({ linkedClaims: second.claims });
+		expect((await linkAccount(session, second.alias)).res.status).toBe(303);
+		const firstBefore = await stored(first.alias);
+		const secondBefore = await stored(second.alias);
+		const auditBefore = (await renameAudit()).length;
+
+		// New alias already in use by another account.
+		const collision = await rename(session, first.alias, second.alias);
+		expect(collision.status).toBe(400);
+		expect(await collision.text()).toContain("already in use");
+		// Current alias does not exist.
+		expect((await rename(session, "never-linked", "whatever")).status).toBe(404);
+		// Invalid new aliases.
+		for (const bad of ["", "Upper", "has space", "-lead", "trail-", "a_b", "x".repeat(33)]) {
+			expect((await rename(session, first.alias, bad)).status, bad).toBe(400);
+		}
+		// Same alias.
+		expect((await rename(session, first.alias, first.alias)).status).toBe(400);
+
+		expect(await stored(first.alias)).toBe(firstBefore);
+		expect(await stored(second.alias)).toBe(secondBefore);
+		expect(await stored("whatever")).toBeNull();
+		expect((await renameAudit()).length).toBe(auditBefore);
+	});
+
+	it("requires an owner session and a CSRF token, and never renames on GET", async () => {
+		const { alias, claims } = fresh();
+		mockGoogle({ linkedClaims: claims });
+		const session = await ownerSession();
+		expect((await linkAccount(session, alias)).res.status).toBe(303);
+		const before = await stored(alias);
+		const newAlias = `${alias}-csrf`;
+
+		expect((await post("/link/rename", null, { alias, newAlias, csrf_token: session.csrf })).status).toBe(403);
+		expect((await post("/link/rename", session.cookie, { alias, newAlias })).status).toBe(403);
+		expect((await post("/link/rename", session.cookie, { alias, newAlias, csrf_token: "forged" })).status).toBe(403);
+		const viaGet = await SELF.fetch(`${BASE}/link/rename?alias=${alias}&newAlias=${newAlias}&csrf_token=${session.csrf}`, {
+			redirect: "manual",
+			headers: { Cookie: session.cookie },
+		});
+		expect(viaGet.status).toBe(404);
+
+		expect(await stored(alias)).toBe(before);
+		expect(await stored(newAlias)).toBeNull();
+		expect(await renameAudit()).not.toContainEqual(expect.objectContaining({ alias }));
+	});
+
+	it("keeps the renamed account usable by the tools under its new alias only", async () => {
+		const { alias, claims } = fresh();
+		mockGoogle({ linkedClaims: claims });
+		const session = await ownerSession();
+		expect((await linkAccount(session, alias)).res.status).toBe(303);
+		const newAlias = `${alias}-tools`;
+		expect((await rename(session, alias, newAlias)).status).toBe(303);
+		expect((await getAccount(env, newAlias))?.email).toBe(claims.email);
+		expect(await getAccount(env, alias)).toBeNull();
+		// Only alias and email reach AI clients: never the picture.
+		const { runReadTool } = await import("../src/tools");
+		const res = await runReadTool(env, "list_accounts", {}, AUDIT_CLIENT);
+		const text = res.content[0].text as string;
+		expect(text).toContain(newAlias);
+		expect(text).not.toContain(alias + '"');
+		expect(text).not.toContain("googleusercontent");
+	});
+});
+
 describe("unlinking an account", () => {
 	it("revokes the token at Google and deletes the record", async () => {
 		const { alias, claims } = fresh();
@@ -563,6 +839,25 @@ describe("unlinking an account", () => {
 	});
 });
 
+describe("picture URLs stay out of the audit log", () => {
+	it("never appear in audit_writes or audit_reads", async () => {
+		const { alias, claims } = fresh();
+		mockGoogle({ linkedClaims: claims });
+		const session = await ownerSession();
+		expect((await linkAccount(session, alias)).res.status).toBe(303);
+		await post("/link/rename", session.cookie, { alias, newAlias: `${alias}-audit`, csrf_token: session.csrf });
+		const { runReadTool } = await import("../src/tools");
+		await runReadTool(env, "list_accounts", {}, AUDIT_CLIENT);
+		for (const table of ["audit_writes", "audit_reads"]) {
+			const { results } = await env.AUDIT_DB.prepare(`SELECT * FROM ${table}`).all();
+			const dump = JSON.stringify(results);
+			expect(dump, table).not.toContain("googleusercontent");
+			expect(dump, table).not.toContain("Linked Person");
+			expect(dump, table).not.toContain("Owner Name");
+		}
+	});
+});
+
 describe("logging", () => {
 	it("never logs tokens, codes, cookies, or email addresses during link + unlink", async () => {
 		const ok = fresh();
@@ -573,6 +868,11 @@ describe("logging", () => {
 		await post("/link/unlink", session.cookie, { alias: ok.alias, csrf_token: session.csrf });
 		await post("/link", session.cookie, { alias: "x", csrf_token: "forged" });
 		await linkCallback(session.cookie, "not-the-state-we-issued");
+		const renamed = fresh();
+		vi.mocked(globalThis.fetch).mockRestore();
+		mockGoogle({ linkedClaims: renamed.claims });
+		await linkAccount(session, renamed.alias);
+		await post("/link/rename", session.cookie, { alias: renamed.alias, newAlias: `${renamed.alias}-new`, csrf_token: session.csrf });
 
 		vi.mocked(globalThis.fetch).mockRestore();
 		mockGoogle({ grantedScope: "openid", linkedClaims: bad.claims });
@@ -580,6 +880,9 @@ describe("logging", () => {
 
 		const logs = allLogOutput();
 		for (const secret of [
+			"googleusercontent",
+			"Linked Person",
+			"Owner Name",
 			"ya29.",
 			"1//",
 			"Bearer ",
@@ -597,6 +900,7 @@ describe("logging", () => {
 		// Outcomes are logged by route, alias and category only.
 		expect(logs).toContain(`linked alias=${ok.alias}`);
 		expect(logs).toContain(`unlinked alias=${ok.alias}`);
+		expect(logs).toContain(`alias=${renamed.alias} newAlias=${renamed.alias}-new`);
 		expect(logs).toContain("bad_csrf");
 		expect(logs).toContain("bad_state");
 		expect(logs).toContain("scope_mismatch");

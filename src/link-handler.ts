@@ -5,6 +5,7 @@
  *   POST /link           start linking under an alias     (session + CSRF)
  *   GET  /link/callback  Google returns here              (session + state + PKCE)
  *   POST /link/unlink    revoke at Google + delete record (session + CSRF)
+ *   POST /link/rename    move the record to a new alias    (session + CSRF)
  */
 import { type Context, Hono } from "hono";
 import { z } from "zod";
@@ -15,6 +16,7 @@ import {
 	getAccount,
 	getRefreshToken,
 	listAccounts,
+	renameAccount,
 	saveAccount,
 } from "./accounts";
 import { randomToken, safeEqual, sha256Base64Url } from "./crypto";
@@ -25,7 +27,8 @@ import {
 	LINK_SCOPES,
 	revokeGoogleToken,
 } from "./google";
-import { type Attention, escapeHtml, renderMessagePage, renderOwnerPage } from "./html";
+import { carryOverUsage, recordAudit } from "./guardrails";
+import { type Attention, avatarHtml, escapeHtml, renderMessagePage, renderOwnerPage } from "./html";
 import { ownerStatus } from "./owner-status";
 import { hasValidCsrf, type OwnerSession, readOwnerSession, startOwnerLogin } from "./session";
 
@@ -45,6 +48,7 @@ type LinkContext = Context<{ Bindings: Env }>;
 
 const NOTICES: Record<string, { text: string; warn?: boolean }> = {
 	linked: { text: "Account linked." },
+	renamed: { text: "Account renamed. Use the new alias in your AI clients from now on." },
 	unlinked: { text: "Account unlinked and its access revoked at Google." },
 	unlinked_not_revoked: {
 		text: "Account unlinked here, but Google did not confirm the revocation. Also remove GoBridge at myaccount.google.com/connections for that account.",
@@ -94,14 +98,20 @@ function renderLinkPage(
 		.map(
 			(account) => `<tr>
 <td><strong>${escapeHtml(account.alias)}</strong></td>
-<td>${escapeHtml(account.email)}</td>
+<td><span class="account-cell">${avatarHtml(account.email, 22, account.picture)}<span>${escapeHtml(account.email)}</span></span></td>
 <td>${
 				attention.relink.includes(account.alias)
 					? '<span class="badge badge-alert">Needs re-link</span>'
 					: '<span class="badge badge-ok">Linked</span>'
 			}</td>
 <td class="muted">${escapeHtml(account.linkedAt.slice(0, 10))}</td>
-<td><form class="inline" method="post" action="/link/unlink">
+<td><form class="inline" method="post" action="/link/rename">
+<input type="hidden" name="csrf_token" value="${csrf}">
+<input type="hidden" name="alias" value="${escapeHtml(account.alias)}">
+<input type="text" name="newAlias" required maxlength="32" pattern="[a-z0-9]([a-z0-9-]{0,30}[a-z0-9])?" autocomplete="off" aria-label="New alias for ${escapeHtml(account.alias)}" placeholder="new alias">
+<button type="submit">Rename</button>
+</form>
+<form class="inline" method="post" action="/link/unlink">
 <input type="hidden" name="csrf_token" value="${csrf}">
 <input type="hidden" name="alias" value="${escapeHtml(account.alias)}">
 <button class="btn-danger" type="submit">Unlink</button>
@@ -133,7 +143,8 @@ ${table}
 <input id="alias" type="text" name="alias" required maxlength="32" pattern="[a-z0-9]([a-z0-9-]{0,30}[a-z0-9])?" autocomplete="off">
 <button class="btn-primary" type="submit">Continue to Google</button>
 </form>
-<p class="muted small">Lowercase letters, numbers and hyphens only. On Google's screen, leave every permission ticked: GoBridge refuses a partial grant.</p>`,
+<p class="muted small">Lowercase letters, numbers and hyphens only. On Google's screen, leave every permission ticked: GoBridge refuses a partial grant.</p>
+<p class="muted small">Renaming keeps the account's access, picture and today's usage limits; past audit entries keep the old alias.</p>`,
 		session,
 		title: "Linked accounts",
 	});
@@ -276,6 +287,7 @@ app.get("/link/callback", async (c) => {
 	await saveAccount(c.env, {
 		alias,
 		email: grant.email,
+		picture: grant.picture,
 		refreshToken: grant.refreshToken,
 		scopes: [...LINK_SCOPES],
 		sub: grant.sub,
@@ -305,6 +317,76 @@ app.post("/link/unlink", async (c) => {
 
 	console.log(`${route} ok: unlinked alias=${alias.data} revoked=${revoked}`);
 	return c.redirect(`/link?msg=${revoked ? "unlinked" : "unlinked_not_revoked"}`, 303);
+});
+
+app.post("/link/rename", async (c) => {
+	const route = "POST /link/rename";
+	const gate = await requireOwnerPost(c, route);
+	if (gate instanceof Response) return gate;
+
+	const alias = aliasSchema.safeParse(gate.form.get("alias"));
+	if (!alias.success || !(await getAccount(c.env, alias.data))) {
+		return denied("No linked account has that alias.", 404, "unknown_alias", route);
+	}
+	const newAlias = aliasSchema.safeParse(gate.form.get("newAlias"));
+	if (!newAlias.success) {
+		return denied(
+			"An alias must be 1-32 lowercase letters, numbers or hyphens, and cannot start or end with a hyphen.",
+			400,
+			"bad_alias",
+			route,
+		);
+	}
+	if (newAlias.data === alias.data) {
+		return denied("That is already the account's alias. Nothing was changed.", 400, "same_alias", route);
+	}
+	if (await getAccount(c.env, newAlias.data)) {
+		return denied(
+			`The alias "${newAlias.data}" is already in use. Nothing was changed.`,
+			400,
+			"alias_in_use",
+			route,
+		);
+	}
+
+	// Usage limits move first: if they cannot, the rename is refused (fail closed).
+	try {
+		await carryOverUsage(c.env, alias.data, newAlias.data);
+	} catch (_e) {
+		return denied(
+			"GoBridge could not carry the account's usage limits over to the new alias, so nothing was renamed. Try again in a moment.",
+			502,
+			"counter_unavailable",
+			route,
+		);
+	}
+
+	const outcome = await renameAccount(c.env, alias.data, newAlias.data);
+	if (outcome !== "ok") {
+		return denied("The account could not be renamed. Nothing was changed.", 400, outcome, route);
+	}
+	// Second pass: catches a call counted on the old alias while the record moved.
+	try {
+		await carryOverUsage(c.env, alias.data, newAlias.data);
+	} catch (_e) {
+		// Already logged by carryOverUsage; the first pass carried the counts.
+	}
+
+	try {
+		await recordAudit(c.env, {
+			alias: alias.data,
+			clientId: "owner",
+			clientName: "Owner (/link)",
+			meta: { newAlias: newAlias.data },
+			outcome: "ok",
+			tool: "rename_account",
+		});
+	} catch (_e) {
+		console.error(`${route} error: audit_failed`);
+	}
+
+	console.log(`${route} ok: alias=${alias.data} newAlias=${newAlias.data}`);
+	return c.redirect("/link?msg=renamed", 303);
 });
 
 export { app as LinkHandler };

@@ -9,7 +9,7 @@
 import { isAllowedEmail, verifyOwner } from "./auth";
 import { randomToken, safeEqual, seal, sha256Base64Url, unseal } from "./crypto";
 import { renderMessagePage } from "./html";
-import { fetchGoogleIdentityClaims, getUpstreamAuthorizeUrl, OWNER_LOGIN_SCOPES } from "./utils";
+import { fetchGoogleIdentityClaims, getUpstreamAuthorizeUrl, OWNER_PAGE_LOGIN_SCOPES } from "./utils";
 
 const SESSION_COOKIE = "__Host-GOBRIDGE_SESSION";
 const LOGIN_STATE_COOKIE = "__Host-GOBRIDGE_LOGIN_STATE";
@@ -34,7 +34,16 @@ export type OwnerSession = {
 	csrf: string;
 	/** Expiry, seconds since the Unix epoch. */
 	exp: number;
+	/**
+	 * Owner's Google profile picture URL, read from the server-side session
+	 * record (never from the cookie). Absent for sessions created before the
+	 * profile scope was added, or when Google sent none.
+	 */
+	picture?: string;
 };
+
+/** What the server-side session record holds besides "this session exists". */
+type SessionRecord = { picture?: string };
 
 function readCookie(request: Request, name: string): string | null {
 	const header = request.headers.get("Cookie") || "";
@@ -60,8 +69,21 @@ export async function readOwnerSession(request: Request, env: Env): Promise<Owne
 	// The cookie alone is not enough: its server-side record must still exist,
 	// so a cookie copied before sign-out cannot be replayed.
 	if (typeof session.sid !== "string" || !session.sid) return null;
-	if (!(await env.OAUTH_KV.get(sessionKey(session.sid)))) return null;
-	return session;
+	const raw = await env.OAUTH_KV.get(sessionKey(session.sid));
+	if (!raw) return null;
+	let record: SessionRecord = {};
+	try {
+		const parsed = JSON.parse(raw) as unknown;
+		if (parsed && typeof parsed === "object") record = parsed as SessionRecord;
+	} catch (_e) {
+		record = {}; // records written before pictures existed hold "1"
+	}
+	// Rebuilt field by field: the picture comes from the record, never the cookie.
+	const { sid, email, sub, csrf, exp } = session;
+	const current: OwnerSession = { csrf, email, exp, sid, sub };
+	return typeof record.picture === "string" && record.picture
+		? { ...current, picture: record.picture }
+		: current;
 }
 
 const sessionKey = (sid: string) => `owner:session:${sid}`;
@@ -97,7 +119,7 @@ export async function startOwnerLogin(
 			Location: getUpstreamAuthorizeUrl({
 				clientId: env.GOOGLE_CLIENT_ID,
 				redirectUri: new URL("/callback", request.url).href,
-				scope: OWNER_LOGIN_SCOPES.join(" "),
+				scope: OWNER_PAGE_LOGIN_SCOPES.join(" "),
 				state,
 				upstreamUrl: "https://accounts.google.com/o/oauth2/v2/auth",
 			}),
@@ -181,7 +203,12 @@ export async function finishOwnerLogin(request: Request, env: Env): Promise<Resp
 		sid: randomToken(),
 		sub: owner.sub,
 	};
-	await env.OAUTH_KV.put(sessionKey(session.sid), "1", { expirationTtl: SESSION_TTL_SECONDS });
+	// The record is what sign-out deletes; it also holds the picture URL (and
+	// nothing else from Google's profile) so the cookie stays identity-only.
+	const record: SessionRecord = owner.picture ? { picture: owner.picture } : {};
+	await env.OAUTH_KV.put(sessionKey(session.sid), JSON.stringify(record), {
+		expirationTtl: SESSION_TTL_SECONDS,
+	});
 	headers.append(
 		"Set-Cookie",
 		cookie(

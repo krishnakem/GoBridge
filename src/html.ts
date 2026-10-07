@@ -1,3 +1,4 @@
+import { PICTURE_HOST } from "./auth";
 import { sanitizeText } from "./workers-oauth-utils";
 
 /**
@@ -17,6 +18,16 @@ export const HTML_SECURITY_HEADERS: Record<string, string> = {
 	"X-Frame-Options": "DENY",
 };
 
+/**
+ * Owner pages additionally may load profile pictures, from this origin or
+ * Google's picture host only (owner-approved 2026-10-07). Everything else is
+ * identical to HTML_SECURITY_HEADERS.
+ */
+export const OWNER_PAGE_CSP = HTML_SECURITY_HEADERS["Content-Security-Policy"].replace(
+	"default-src 'none'; ",
+	`default-src 'none'; img-src 'self' https://${PICTURE_HOST}; `,
+);
+
 /** Escapes text for use in HTML content or attribute values. */
 export const escapeHtml = sanitizeText;
 
@@ -26,11 +37,13 @@ function renderDocument(
 	bodyHtml: string,
 	status: number,
 	extraHeaders?: Headers,
+	csp = HTML_SECURITY_HEADERS["Content-Security-Policy"],
 ): Response {
 	const headers = new Headers(extraHeaders);
 	for (const [name, value] of Object.entries(HTML_SECURITY_HEADERS)) {
 		headers.set(name, value);
 	}
+	headers.set("Content-Security-Policy", csp);
 	const html = `<!DOCTYPE html>
 <html lang="en">
 <head>
@@ -105,6 +118,20 @@ export type Attention = {
 
 export type OwnerPath = "/link" | "/audit" | "/clients" | "/settings";
 
+/**
+ * A round avatar: the profile picture when there is one, over the initial
+ * letter, which shows until the image loads and stays if it fails (the
+ * broken image is hidden by /static/menu.js; no inline handlers). The
+ * picture URL is only ever one that passed profilePictureFrom().
+ */
+export function avatarHtml(email: string, size: 22 | 32, picture?: string): string {
+	const initial = escapeHtml(email.trim().charAt(0).toUpperCase() || "?");
+	const img = picture
+		? `<img class="avatar-img" src="${escapeHtml(picture)}" alt="" referrerpolicy="no-referrer">`
+		: "";
+	return `<span class="avatar avatar-${size}" aria-hidden="true">${img}${initial}</span>`;
+}
+
 const icon = (paths: string) =>
 	`<svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">${paths}</svg>`;
 
@@ -137,7 +164,7 @@ function navLinks(active: OwnerPath): string {
 
 function accountMenu(
 	variant: "row" | "avatar",
-	session: { email: string; csrf: string },
+	session: { email: string; csrf: string; picture?: string },
 	attention: Attention,
 ): string {
 	const email = escapeHtml(session.email);
@@ -151,9 +178,7 @@ function accountMenu(
 				? "Re-link needed"
 				: "";
 	const size = variant === "row" ? 22 : 32;
-	const avatar = `<span class="avatar-wrap"><span class="avatar avatar-${size}" aria-hidden="true">${escapeHtml(
-		session.email.trim().charAt(0).toUpperCase() || "?",
-	)}</span>${needsAttention ? '<span class="dot"></span>' : ""}</span>`;
+	const avatar = `<span class="avatar-wrap">${avatarHtml(session.email, size, session.picture)}${needsAttention ? '<span class="dot"></span>' : ""}</span>`;
 	const trigger =
 		variant === "row"
 			? `${avatar}<span class="account-email">${email}</span>`
@@ -186,7 +211,7 @@ function accountMenu(
 export function renderOwnerPage(options: {
 	title: string;
 	active: OwnerPath;
-	session: { email: string; csrf: string };
+	session: { email: string; csrf: string; picture?: string };
 	attention: Attention;
 	bodyHtml: string;
 }): Response {
@@ -219,5 +244,7 @@ ${bodyHtml}
 ${navLinks(active)}
 </nav>`,
 		200,
+		undefined,
+		OWNER_PAGE_CSP,
 	);
 }

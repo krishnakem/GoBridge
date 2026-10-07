@@ -18,7 +18,7 @@
  * rows older than 90 days.
  */
 import { ToolError } from "./google-api";
-import type { CounterKind } from "./usage-counter";
+import type { CounterKind, CounterRow } from "./usage-counter";
 
 export const WRITE_RATE_LIMIT_PER_HOUR = 60;
 export const DAILY_SHARE_CAP = 10;
@@ -135,6 +135,27 @@ export async function reserveDailyShare(env: Env, alias: string): Promise<void> 
 	}
 }
 
+/**
+ * Copies the current hour's and day's counts from one alias to another, so
+ * renaming an account cannot reset its rate limits or daily caps. Throws if
+ * either counter cannot be read or updated: the caller must then refuse the
+ * rename (fail closed).
+ */
+export async function carryOverUsage(env: Env, fromAlias: string, toAlias: string): Promise<void> {
+	let rows: unknown;
+	try {
+		rows = await counterFor(env, fromAlias).snapshot();
+		if (!Array.isArray(rows)) throw new Error("bad snapshot");
+		await counterFor(env, toAlias).absorb(rows as CounterRow[]);
+	} catch (_e) {
+		console.error("usage counter error: carry_over_failed");
+		throw new ToolError(
+			"counter_unavailable",
+			"GoBridge could not carry the account's usage limits over, so nothing was renamed. Try again in a moment.",
+		);
+	}
+}
+
 /** Read-only view of an account's counters, for the /settings page. Null if unavailable. */
 export async function writeUsage(
 	env: Env,
@@ -182,6 +203,8 @@ export type AuditMeta = {
 	parentId?: string;
 	role?: string;
 	recipient?: string;
+	/** Owner renames on /link: the alias the account was moved to. */
+	newAlias?: string;
 	/** Reads only: how many items came back. Never what they were. */
 	resultCount?: number;
 };
@@ -226,6 +249,7 @@ function sanitizeMeta(meta: AuditMeta): AuditMeta {
 		parentId: clip(meta.parentId, 256),
 		role: clip(meta.role, 20),
 		recipient: clip(meta.recipient, 254),
+		newAlias: clip(meta.newAlias, 32),
 	};
 }
 
