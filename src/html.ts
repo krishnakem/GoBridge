@@ -154,35 +154,50 @@ const NAV: { href: OwnerPath; label: string; icon: string }[] = [
 		icon: icon('<rect x="3" y="4" width="18" height="12" rx="2"/><path d="M8 20h8M12 16v4"/>'),
 		label: "AI clients",
 	},
+	{
+		href: "/settings",
+		icon: icon(
+			'<circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 1 1-4 0v-.09a1.65 1.65 0 0 0-1-1.51 1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06A1.65 1.65 0 0 0 4.6 15a1.65 1.65 0 0 0-1.51-1H3a2 2 0 1 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06A1.65 1.65 0 0 0 9 4.6a1.65 1.65 0 0 0 1-1.51V3a2 2 0 1 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06A1.65 1.65 0 0 0 19.4 9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 1 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"/>',
+		),
+		label: "Settings",
+	},
 ];
 
-function navLinks(active: OwnerPath): string {
+/** What the Settings entry reports when something needs attention. */
+function attentionFlag(attention: Attention): string {
+	if (attention.writesOff) return "Writes off";
+	if (attention.switchesOff?.length) return "Feature off";
+	if (attention.relink.length) return "Re-link needed";
+	return "";
+}
+
+/** Navigation links; the sidebar (`withFlag`) also shows the attention flag on Settings. */
+function navLinks(active: OwnerPath, attention: Attention, withFlag: boolean): string {
+	const flag = withFlag ? attentionFlag(attention) : "";
 	return NAV.map(
 		(item) =>
-			`<a href="${item.href}"${item.href === active ? ' aria-current="page"' : ""}>${item.icon}<span>${item.label}</span></a>`,
+			`<a href="${item.href}"${item.href === active ? ' aria-current="page"' : ""}>${item.icon}<span>${item.label}</span>${item.href === "/settings" && flag ? `<span class="nav-flag">${flag}</span>` : ""}</a>`,
 	).join("\n");
 }
 
+/**
+ * The account menu: the owner's email as its header and Sign Out. The "row"
+ * trigger (sidebar) shows the owner's name when the session has one, else
+ * the email; the "avatar" trigger (phone top bar) shows the picture only.
+ */
 function accountMenu(
 	variant: "row" | "avatar",
-	session: { email: string; csrf: string; picture?: string },
+	session: { email: string; csrf: string; picture?: string; name?: string },
 	attention: Attention,
 ): string {
 	const email = escapeHtml(session.email);
 	const otherOff = attention.switchesOff?.length ?? 0;
 	const needsAttention = attention.writesOff || otherOff > 0 || attention.relink.length > 0;
-	const flag = attention.writesOff
-		? "Writes off"
-		: otherOff
-			? "Feature off"
-			: attention.relink.length
-				? "Re-link needed"
-				: "";
 	const size = variant === "row" ? 22 : 32;
 	const avatar = `<span class="avatar-wrap">${avatarHtml(session.email, size, session.picture)}${needsAttention ? '<span class="dot"></span>' : ""}</span>`;
 	const trigger =
 		variant === "row"
-			? `${avatar}<span class="account-email">${email}</span>`
+			? `${avatar}<span class="account-label">${escapeHtml(session.name || session.email)}</span>`
 			: avatar;
 
 	return `<details class="account-menu" data-account-menu>
@@ -190,11 +205,6 @@ function accountMenu(
 <div class="menu-backdrop" data-menu-close></div>
 <div class="menu" role="menu" aria-label="Account">
 <div class="menu-header">${email}</div>
-<div class="menu-divider" role="separator"></div>
-<a class="menu-item" role="menuitem" href="/link">Linked accounts</a>
-<a class="menu-item" role="menuitem" href="/audit">Recent writes</a>
-<a class="menu-item" role="menuitem" href="/clients">AI clients</a>
-<a class="menu-item" role="menuitem" href="/settings"><span>Settings</span>${flag ? `<span class="menu-flag">${flag}</span>` : ""}</a>
 <div class="menu-divider" role="separator"></div>
 <form method="POST" action="/logout">
 <input type="hidden" name="csrf_token" value="${escapeHtml(session.csrf)}">
@@ -212,7 +222,7 @@ function accountMenu(
 export function renderOwnerPage(options: {
 	title: string;
 	active: OwnerPath;
-	session: { email: string; csrf: string; picture?: string };
+	session: { email: string; csrf: string; picture?: string; name?: string };
 	attention: Attention;
 	bodyHtml: string;
 }): Response {
@@ -224,7 +234,7 @@ export function renderOwnerPage(options: {
 <aside class="sidebar">
 <div class="brand">GoBridge</div>
 <nav class="side-nav" aria-label="Main">
-${navLinks(active)}
+${navLinks(active, attention, true)}
 </nav>
 <div class="side-account">
 ${accountMenu("row", session, attention)}
@@ -242,7 +252,7 @@ ${bodyHtml}
 </div>
 </div>
 <nav class="tabbar" aria-label="Main">
-${navLinks(active)}
+${navLinks(active, attention, false)}
 </nav>`,
 		200,
 		undefined,

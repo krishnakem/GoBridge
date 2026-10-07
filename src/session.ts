@@ -40,10 +40,12 @@ export type OwnerSession = {
 	 * profile scope was added, or when Google sent none.
 	 */
 	picture?: string;
+	/** Owner's display name, from the same record. Shown on the menu trigger only. */
+	name?: string;
 };
 
 /** What the server-side session record holds besides "this session exists". */
-type SessionRecord = { picture?: string };
+type SessionRecord = { picture?: string; name?: string };
 
 function readCookie(request: Request, name: string): string | null {
 	const header = request.headers.get("Cookie") || "";
@@ -78,12 +80,12 @@ export async function readOwnerSession(request: Request, env: Env): Promise<Owne
 	} catch (_e) {
 		record = {}; // records written before pictures existed hold "1"
 	}
-	// Rebuilt field by field: the picture comes from the record, never the cookie.
+	// Rebuilt field by field: picture and name come from the record, never the cookie.
 	const { sid, email, sub, csrf, exp } = session;
 	const current: OwnerSession = { csrf, email, exp, sid, sub };
-	return typeof record.picture === "string" && record.picture
-		? { ...current, picture: record.picture }
-		: current;
+	if (typeof record.picture === "string" && record.picture) current.picture = record.picture;
+	if (typeof record.name === "string" && record.name) current.name = record.name;
+	return current;
 }
 
 const sessionKey = (sid: string) => `owner:session:${sid}`;
@@ -203,9 +205,13 @@ export async function finishOwnerLogin(request: Request, env: Env): Promise<Resp
 		sid: randomToken(),
 		sub: owner.sub,
 	};
-	// The record is what sign-out deletes; it also holds the picture URL (and
-	// nothing else from Google's profile) so the cookie stays identity-only.
-	const record: SessionRecord = owner.picture ? { picture: owner.picture } : {};
+	// The record is what sign-out deletes; it also holds the picture URL and
+	// display name (nothing else from Google's profile) so the cookie stays
+	// identity-only.
+	const record: SessionRecord = {
+		...(owner.picture ? { picture: owner.picture } : {}),
+		...(owner.name ? { name: owner.name } : {}),
+	};
 	await env.OAUTH_KV.put(sessionKey(session.sid), JSON.stringify(record), {
 		expirationTtl: SESSION_TTL_SECONDS,
 	});
