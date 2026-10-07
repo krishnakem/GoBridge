@@ -1,4 +1,5 @@
 import { PICTURE_HOST } from "./auth";
+import { STATIC_VERSION } from "./static-assets";
 import { sanitizeText } from "./workers-oauth-utils";
 
 /**
@@ -50,8 +51,8 @@ function renderDocument(
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
 <title>GoBridge | ${escapeHtml(title)}</title>
-<link rel="stylesheet" href="/static/app.css">
-<script src="/static/menu.js" defer></script>
+<link rel="stylesheet" href="/static/app.css?v=${STATIC_VERSION}">
+<script src="/static/menu.js?v=${STATIC_VERSION}" defer></script>
 </head>
 <body class="${bodyClass}">
 ${bodyHtml}
@@ -127,7 +128,7 @@ export type OwnerPath = "/link" | "/audit" | "/clients" | "/settings";
 export function avatarHtml(email: string, size: 22 | 32, picture?: string): string {
 	const initial = escapeHtml(email.trim().charAt(0).toUpperCase() || "?");
 	const img = picture
-		? `<img class="avatar-img" src="${escapeHtml(picture)}" alt="" referrerpolicy="no-referrer">`
+		? `<img class="avatar-img" src="${escapeHtml(picture)}" alt="" width="${size}" height="${size}" referrerpolicy="no-referrer">`
 		: "";
 	return `<span class="avatar avatar-${size}" aria-hidden="true">${img}${initial}</span>`;
 }
