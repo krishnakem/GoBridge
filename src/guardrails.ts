@@ -125,12 +125,15 @@ export async function reserveDailySend(env: Env, alias: string): Promise<void> {
 	}
 }
 
-/** Reserves one share_file call for this account today (UTC); throws once the daily cap is reached. */
+/**
+ * Reserves one share action (share_file or copy_sheet_to) for this account
+ * today (UTC); throws once the daily cap is reached.
+ */
 export async function reserveDailyShare(env: Env, alias: string): Promise<void> {
 	if (!(await take(env, alias, "share", DAILY_SHARE_CAP))) {
 		throw new ToolError(
 			"share_cap_reached",
-			`Daily share cap reached: at most ${DAILY_SHARE_CAP} share_file calls per account per day. Nothing was shared.`,
+			`Daily share cap reached: at most ${DAILY_SHARE_CAP} share actions (share_file, copy_sheet_to) per account per day. Nothing was shared.`,
 		);
 	}
 }
@@ -207,6 +210,22 @@ export type AuditMeta = {
 	newAlias?: string;
 	/** Owner changes on /settings: the redirect URL allowed or removed. */
 	redirectUri?: string;
+	/** Docs, Sheets and Slides writes (owner-approved 2026-10-08): request type -> count. */
+	requestTypes?: Record<string, number>;
+	cellCount?: number;
+	rowCount?: number;
+	rangeCount?: number;
+	commentOps?: number;
+	/** Rule B: how many external-reaching formulas the call carried. Never the formula. */
+	externalFormulas?: number;
+	/** Rules A and B: whether the caller set the override flag. Never the URL or formula. */
+	allowExternalUrls?: boolean;
+	allowExternalFormulas?: boolean;
+	valueInputOption?: string;
+	/** copy_sheet_to: the spreadsheet copied into. */
+	destinationFileId?: string;
+	sheetId?: string;
+	dimension?: string;
 	/** Reads only: how many items came back. Never what they were. */
 	resultCount?: number;
 };
@@ -225,6 +244,18 @@ export type AuditEntry = {
 
 const clip = (value: unknown, max: number) =>
 	typeof value === "string" ? value.slice(0, max) : undefined;
+const num = (value: unknown) => (typeof value === "number" && Number.isFinite(value) ? Math.floor(value) : undefined);
+const bool = (value: unknown) => (typeof value === "boolean" ? value : undefined);
+
+/** Request type names and counts only: at most 100 entries, names limited to letters. */
+function requestTypeCounts(value: unknown): Record<string, number> | undefined {
+	if (!value || typeof value !== "object" || Array.isArray(value)) return undefined;
+	const out: Record<string, number> = {};
+	for (const [key, count] of Object.entries(value as Record<string, unknown>).slice(0, 100)) {
+		if (/^[A-Za-z]{1,40}$/.test(key) && typeof count === "number") out[key] = Math.floor(count);
+	}
+	return Object.keys(out).length ? out : undefined;
+}
 
 /** Copies only the known audit fields, clipped. Bodies can never get in. */
 function sanitizeMeta(meta: AuditMeta): AuditMeta {
@@ -253,6 +284,18 @@ function sanitizeMeta(meta: AuditMeta): AuditMeta {
 		recipient: clip(meta.recipient, 254),
 		newAlias: clip(meta.newAlias, 32),
 		redirectUri: clip(meta.redirectUri, 512),
+		requestTypes: requestTypeCounts(meta.requestTypes),
+		cellCount: num(meta.cellCount),
+		rowCount: num(meta.rowCount),
+		rangeCount: num(meta.rangeCount),
+		commentOps: num(meta.commentOps),
+		externalFormulas: num(meta.externalFormulas),
+		allowExternalUrls: bool(meta.allowExternalUrls),
+		allowExternalFormulas: bool(meta.allowExternalFormulas),
+		valueInputOption: clip(meta.valueInputOption, 20),
+		destinationFileId: clip(meta.destinationFileId, 256),
+		sheetId: clip(meta.sheetId, 20),
+		dimension: clip(meta.dimension, 10),
 	};
 }
 

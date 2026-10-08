@@ -6,7 +6,7 @@ Personal project, shared as a reference. Not a hosted service; deploy your own c
 
 ## What it does
 
-- 51 MCP tools matching the names and parameters of Google's own Gmail (30), Calendar (9) and Drive (11) connectors, plus `list_accounts`. Every tool takes an account alias.
+- 72 MCP tools matching the names and parameters of Google's own Gmail (30), Calendar (9) and Drive (11) connectors and its Docs (2), Sheets (6) and Slides (4) MCP servers, plus the Sheets API methods those servers leave out (8), one Drive Activity tool and `list_accounts`. Every tool takes an account alias.
 - Link any number of Google accounts on an owner-only `/link` page (rename or unlink them there too); refresh tokens are stored encrypted (AES-256-GCM).
 - Only one Google account (the owner, set in a secret) can sign in. OAuth 2.1 with PKCE S256 for AI clients.
 
@@ -14,9 +14,12 @@ Personal project, shared as a reference. Not a hosted service; deploy your own c
 
 - Messages and files are never permanently deleted (only unsent drafts and labels can be).
 - Per-account limits: 25 sends/day, 60 writes/hour, 300 reads/hour, 10 Drive shares/day. Counters are atomic and fail closed.
-- Drive sharing only to a person or group, never "anyone" or a whole domain.
+- Drive sharing only to a person or group, never "anyone" or a whole domain. Copying a sheet into another spreadsheet only when this account owns the destination, and it counts as a share.
+- Docs and Slides requests that make Google fetch a URL (inserting images from URLs) and Sheets formulas that reach outside the spreadsheet (`IMPORTRANGE`, `IMPORTXML`, `IMAGE`, `HYPERLINK`...) are refused unless the call carries an explicit `allowExternalUrls` / `allowExternalFormulas` flag that the tool description reserves for URLs and formulas the user personally supplied. The audit log records that the flag was set, never the URL or formula.
+- Slide thumbnails are fetched server-side from Google's image host only and returned as images; no URL is handed to the model.
+- Content inside Docs, Sheets and Slides can be edited and deleted (version history restores it); files themselves are only ever trashed.
 - Kill switches for all writes, direct send, forward, Drive writes and Drive sharing.
-- Audit log (D1) of writes and minimal reads — never message bodies, queries or file content; 90-day retention.
+- Audit log (D1) of writes and minimal reads — never message bodies, queries, cell values, formulas, ranges, titles or file content; for Docs/Sheets/Slides writes it records file ids, request types with counts, cell counts and the override flags; 90-day retention.
 - All external content is wrapped in `<untrusted_content>` so the model treats it as data, not instructions.
 - Allowed AI clients: an app can sign in and use `/mcp` only when every redirect URL it registered is on the owner's list in `/settings`. Checked at `/authorize`, `/callback` and on every `/mcp` request; removing a URL cuts that app off at once. An empty list allows no app.
 - Owner pages: CSRF on every state change, strict CSP, no inline scripts.

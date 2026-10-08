@@ -465,6 +465,34 @@ describe("stale scopes", () => {
 		await deleteAccount(env, "no-profile");
 	});
 
+	it("shows a Drive Activity note, not a re-link flag, for an account linked before that scope existed", async () => {
+		mockGoogle();
+		await saveAccount(env, {
+			alias: "no-activity",
+			email: "noactivity@example.com",
+			refreshToken: "1//fake-google-refresh-token",
+			scopes: [...TOOL_SCOPES, "openid", "email", "profile"],
+			sub: "no-activity-sub",
+		});
+		await saveAccount(env, {
+			alias: "has-activity",
+			email: "hasactivity@example.com",
+			refreshToken: "1//fake-google-refresh-token",
+			scopes: [...LINK_SCOPES],
+			sub: "has-activity-sub",
+		});
+		const owner = await signIn();
+		const html = await (await get("/link", owner.cookie)).text();
+		expect(html).toContain('<span class="badge badge-ok">Linked</span><br><span class="muted small">Re-link for Drive Activity</span>');
+		expect(html.match(/Re-link for Drive Activity/g)).toHaveLength(1);
+		expect(html).not.toContain('class="dot"');
+		expect(html).not.toContain("Re-link needed");
+		expect(html).not.toContain("Needs re-link");
+		expect(html).not.toContain("nav-flag");
+		await deleteAccount(env, "no-activity");
+		await deleteAccount(env, "has-activity");
+	});
+
 	it("flags an account missing a scope the tools need, whatever else it has", async () => {
 		mockGoogle();
 		await saveAccount(env, {
