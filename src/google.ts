@@ -26,6 +26,13 @@ export const TOOL_SCOPES = [
 ] as const;
 
 /**
+ * Drive Activity (owner-approved 2026-10-08): used by query_drive_activity
+ * only. Optional for accounts linked before it was added: they keep every
+ * other tool and are NOT flagged for re-link; /link shows a note instead.
+ */
+export const DRIVE_ACTIVITY_SCOPE = "https://www.googleapis.com/auth/drive.activity.readonly";
+
+/**
  * EXACTLY the scopes a linked account grants. Changing this list requires the
  * owner's explicit approval (see SPEC.md and PARITY.md). Never add
  * https://mail.google.com/, gmail.settings.*, or the full calendar scope.
@@ -34,11 +41,16 @@ export const TOOL_SCOPES = [
  * accounts: it only supplies the picture shown on /link, so an account linked
  * without it is NOT flagged for re-link.
  */
-export const LINK_SCOPES = [...TOOL_SCOPES, "openid", "email", "profile"] as const;
+export const LINK_SCOPES = [...TOOL_SCOPES, DRIVE_ACTIVITY_SCOPE, "openid", "email", "profile"] as const;
 
-/** True when a stored account was linked with every scope the tools need. */
+/** True when a stored account was linked with every scope the tools need (Drive Activity excluded). */
 export function hasCurrentScopes(scopes: unknown): boolean {
 	return Array.isArray(scopes) && TOOL_SCOPES.every((scope) => scopes.includes(scope));
+}
+
+/** True when the account can use query_drive_activity. */
+export function hasDriveActivityScope(scopes: unknown): boolean {
+	return Array.isArray(scopes) && scopes.includes(DRIVE_ACTIVITY_SCOPE);
 }
 
 /** Google reports the `email` and `profile` scopes under their long names. */

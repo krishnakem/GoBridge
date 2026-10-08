@@ -70,6 +70,19 @@ function auditDetails(entry: AuditEntry): string {
 	if (meta.fileId) parts.push(`File id: ${meta.fileId}`);
 	if (meta.parentId) parts.push(`Folder id: ${meta.parentId}`);
 	if (meta.recipient) parts.push(`Shared with: ${meta.recipient}${meta.role ? ` (${meta.role})` : ""}`);
+	if (meta.destinationFileId) parts.push(`Copied into file id: ${meta.destinationFileId}`);
+	if (meta.sheetId) parts.push(`Sheet id: ${meta.sheetId}${meta.dimension ? ` (${meta.dimension})` : ""}`);
+	if (meta.requestTypes) {
+		parts.push(`Requests: ${Object.entries(meta.requestTypes).map(([type, count]) => `${type} x${count}`).join(", ")}`);
+	}
+	if (meta.rangeCount !== undefined) parts.push(`Ranges: ${meta.rangeCount}`);
+	if (meta.rowCount !== undefined) parts.push(`Rows: ${meta.rowCount}`);
+	if (meta.cellCount !== undefined) parts.push(`Cells: ${meta.cellCount}`);
+	if (meta.valueInputOption) parts.push(`Input: ${meta.valueInputOption}`);
+	if (meta.commentOps) parts.push(`Comment requests: ${meta.commentOps}`);
+	if (meta.allowExternalUrls) parts.push("External URLs allowed by caller");
+	if (meta.allowExternalFormulas) parts.push("External formulas allowed by caller");
+	if (meta.externalFormulas) parts.push(`External formulas: ${meta.externalFormulas}`);
 	if (meta.newAlias) parts.push(`Renamed to: ${meta.newAlias}`);
 	if (meta.redirectUri) parts.push(`Redirect URL: ${meta.redirectUri}`);
 	if (meta.resultCount !== undefined) parts.push(`Items returned: ${meta.resultCount}`);

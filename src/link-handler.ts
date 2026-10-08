@@ -24,6 +24,7 @@ import {
 	buildLinkAuthorizeUrl,
 	exchangeLinkCode,
 	grantedScopesMatch,
+	hasDriveActivityScope,
 	LINK_SCOPES,
 	revokeGoogleToken,
 } from "./google";
@@ -103,6 +104,10 @@ function renderLinkPage(
 				attention.relink.includes(account.alias)
 					? '<span class="badge badge-alert">Needs re-link</span>'
 					: '<span class="badge badge-ok">Linked</span>'
+			}${
+				!attention.relink.includes(account.alias) && !hasDriveActivityScope(account.scopes)
+					? '<br><span class="muted small">Re-link for Drive Activity</span>'
+					: ""
 			}</td>
 <td class="muted">${escapeHtml(account.linkedAt.slice(0, 10))}</td>
 <td><form class="inline" method="post" action="/link/rename">

@@ -7,6 +7,7 @@ import { unzipSync } from "fflate";
 import { z } from "zod";
 import { googleJson, googleRequest, readTextCapped, ToolError } from "../google-api";
 import { type KillSwitch, reserveDailyShare } from "../guardrails";
+import { listComments } from "./comments";
 import {
 	account,
 	base64,
@@ -334,23 +335,7 @@ export const DRIVE_TOOLS = [
 			const content = capBody(text, LIMITS.fileChars);
 			let comments: unknown;
 			if (args.includeComments && exportAs) {
-				const data = await googleJson<{ comments?: DriveFile[] }>(
-					env,
-					args.account,
-					`${DRIVE}/${encodeURIComponent(args.fileId)}/comments?pageSize=${LIMITS.comments}&fields=comments(id,createdTime,resolved,author(emailAddress,displayName),content,quotedFileContent(value),replies(author(displayName),content,createdTime))`,
-					{ what: "file id" },
-				);
-				comments = (data.comments ?? []).slice(0, LIMITS.comments).map((c) => ({
-					id: c.id,
-					createdTime: c.createdTime,
-					resolved: c.resolved,
-					author: untrusted("drive", cap(c.author?.displayName ?? c.author?.emailAddress, LIMITS.headerChars)),
-					quoted: untrusted("drive", cap(c.quotedFileContent?.value, 500)),
-					content: untrusted("drive", cap(c.content, 2000)),
-					replies: Array.isArray(c.replies)
-						? c.replies.slice(0, 20).map((r: any) => ({ author: untrusted("drive", cap(r?.author?.displayName, 200)), content: untrusted("drive", cap(r?.content, 2000)), createdTime: r?.createdTime }))
-						: undefined,
-				}));
+				comments = await listComments(env, args.account, args.fileId, "drive");
 			}
 			return { ...base, contentType: exportAs ?? mimeType, content: untrusted("drive", content.text), contentTruncated: content.truncated || truncated, comments };
 		},
