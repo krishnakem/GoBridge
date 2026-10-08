@@ -1,5 +1,6 @@
 /**
- * Tool registry and runner (PARITY.md).
+ * Tool registry and runner (PARITY.md): Gmail, Calendar, Drive, and, since
+ * 2026-10-08, Docs, Sheets, Slides and Drive Activity.
  *
  * Every call goes through runTool, which enforces, in order: validation, a
  * known MCP client, a linked account, the feature switches (writes only), the
@@ -19,10 +20,14 @@ import {
 	recordReadAudit,
 	switchEnabled,
 } from "./guardrails";
+import { ACTIVITY_TOOLS } from "./tools/activity";
 import { CALENDAR_TOOLS } from "./tools/calendar";
 import { type McpContent, type ToolDef, tool } from "./tools/common";
+import { DOCS_TOOLS } from "./tools/docs";
 import { DRIVE_TOOLS } from "./tools/drive";
 import { GMAIL_TOOLS } from "./tools/gmail";
+import { SHEETS_TOOLS } from "./tools/sheets";
+import { SLIDES_TOOLS } from "./tools/slides";
 import { z } from "zod";
 
 const listAccountsTool = tool({
@@ -38,7 +43,16 @@ const listAccountsTool = tool({
 	}),
 });
 
-export const ALL_TOOLS: ToolDef[] = [listAccountsTool, ...GMAIL_TOOLS, ...CALENDAR_TOOLS, ...DRIVE_TOOLS];
+export const ALL_TOOLS: ToolDef[] = [
+	listAccountsTool,
+	...GMAIL_TOOLS,
+	...CALENDAR_TOOLS,
+	...DRIVE_TOOLS,
+	...DOCS_TOOLS,
+	...SHEETS_TOOLS,
+	...SLIDES_TOOLS,
+	...ACTIVITY_TOOLS,
+];
 export const READ_TOOLS = ALL_TOOLS.filter((t) => t.kind === "read");
 export const WRITE_TOOLS = ALL_TOOLS.filter((t) => t.kind === "write");
 

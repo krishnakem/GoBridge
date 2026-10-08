@@ -285,18 +285,43 @@ const EXPECTED: Record<string, string[]> = {
 	update_file: ["fileId", "title", "parentId"],
 	trash_file: ["fileId"],
 	share_file: ["fileId", "emailAddress", "role"],
+	// Docs, Sheets, Slides, Drive Activity (owner-approved 2026-10-08)
+	read_doc: ["documentId", "commentsIncluded", "includeTabsContent", "suggestionsViewMode", "pageToken"],
+	update_doc: ["documentId", "requests", "writeControl", "allowExternalUrls"],
+	get_spreadsheet: ["spreadsheetId", "includeGridData", "fields", "ranges", "commentsIncluded", "dataFilters"],
+	get_values: ["spreadsheetId", "range", "valueRenderOption", "dateTimeRenderOption", "majorDimension"],
+	batch_get_values: ["spreadsheetId", "ranges", "dataFilters", "valueRenderOption", "dateTimeRenderOption", "majorDimension"],
+	get_developer_metadata: ["spreadsheetId", "metadataId"],
+	search_developer_metadata: ["spreadsheetId", "dataFilters"],
+	update_values: ["spreadsheetId", "range", "values", "valueInputOption", "includeValuesInResponse", "allowExternalFormulas"],
+	update_formulas: ["spreadsheetId", "range", "formulas", "allowExternalFormulas"],
+	batch_update_values: ["spreadsheetId", "data", "valueInputOption", "includeValuesInResponse", "allowExternalFormulas"],
+	append_values: ["spreadsheetId", "range", "values", "valueInputOption", "insertDataOption", "includeValuesInResponse", "allowExternalFormulas"],
+	clear_values: ["spreadsheetId", "range"],
+	batch_clear_values: ["spreadsheetId", "ranges", "dataFilters"],
+	update_spreadsheet: ["spreadsheetId", "requests", "writeControl", "allowExternalFormulas"],
+	insert_dimension: ["spreadsheetId", "sheetId", "dimension", "startIndex", "endIndex", "inheritFromBefore"],
+	copy_sheet_to: ["spreadsheetId", "sheetId", "destinationSpreadsheetId"],
+	read_presentation: ["presentationId", "fields", "commentsIncluded", "pageToken"],
+	read_slide_page: ["presentationId", "pageId", "fields", "commentsIncluded"],
+	read_slide_page_thumbnail: ["presentationId", "pageId", "thumbnailProperties"],
+	update_presentation: ["presentationId", "requests", "writeControl", "allowExternalUrls"],
+	query_drive_activity: ["itemName", "ancestorName", "filter", "pageSize", "pageToken"],
 };
 const DESTRUCTIVE = new Set([
 	"update_draft", "delete_draft", "send_message", "reply", "forward", "update_label", "delete_label",
 	"trash_message", "trash_thread", "mark_message_spam", "mark_thread_spam", "apply_sensitive_message_label", "apply_sensitive_thread_label",
 	"update_event", "delete_event", "update_file", "trash_file", "share_file",
+	"update_doc", "update_values", "update_formulas", "batch_update_values", "clear_values", "batch_clear_values", "update_spreadsheet", "copy_sheet_to", "update_presentation",
 ]);
 
 describe("tool list (PARITY.md)", () => {
-	it("has exactly the 51 tools with the specified parameters", () => {
+	it("has exactly the 72 tools with the specified parameters", () => {
 		expect(ALL_TOOLS.map((t) => t.name).sort()).toEqual(Object.keys(EXPECTED).sort());
-		expect(ALL_TOOLS).toHaveLength(51);
-		expect(READ_TOOLS.map((t) => t.name).filter((n) => n.startsWith("search") || n.startsWith("get") || n.startsWith("list") || n === "suggest_time" || n.endsWith("_content"))).toHaveLength(READ_TOOLS.length);
+		expect(ALL_TOOLS).toHaveLength(72);
+		expect(READ_TOOLS).toHaveLength(28);
+		expect(WRITE_TOOLS).toHaveLength(44);
+		expect(READ_TOOLS.map((t) => t.name).filter((n) => /^(search|get|list|read|batch_get|query)_/.test(n) || n === "suggest_time" || n.endsWith("_content"))).toHaveLength(READ_TOOLS.length);
 		for (const t of ALL_TOOLS) {
 			const keys = Object.keys(t.schema.shape).filter((k) => k !== "account");
 			expect(keys.sort(), t.name).toEqual([...EXPECTED[t.name]].sort());
@@ -311,7 +336,7 @@ describe("tool list (PARITY.md)", () => {
 	it("annotates reads as read-only and sensitive writes as destructive, with confirm-first descriptions", () => {
 		const registered: { name: string; config: any }[] = [];
 		registerTools({ registerTool: (name: string, config: unknown) => registered.push({ config, name }) } as any, env, () => CLIENT);
-		expect(registered).toHaveLength(51);
+		expect(registered).toHaveLength(72);
 		for (const { name, config } of registered) {
 			const read = READ_TOOLS.some((t) => t.name === name);
 			expect(config.annotations.readOnlyHint, name).toBe(read);
