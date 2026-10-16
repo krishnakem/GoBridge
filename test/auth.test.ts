@@ -145,6 +145,20 @@ async function exchangeCode(login: Awaited<ReturnType<typeof startLogin>>, code:
 	});
 }
 
+/** The JSON-RPC result from an /mcp response body (plain JSON or one SSE event). */
+function jsonRpcResult(body: string): any {
+	const json = body.startsWith("{")
+		? body
+		: body
+				.split("\n")
+				.find((line) => line.startsWith("data:"))
+				?.slice("data:".length)
+				.trim();
+	const message = JSON.parse(json ?? "null");
+	expect(message?.error).toBeUndefined();
+	return message.result;
+}
+
 function allLogOutput(): string {
 	return logSpies
 		.flatMap((spy) => spy.mock.calls)
@@ -287,6 +301,12 @@ describe("unauthenticated access", () => {
 			["/signed-out", 200],
 			["/static/app.css", 200],
 			["/static/menu.js", 200],
+			["/static/logo.svg", 200],
+			["/static/logo-256.png", 200],
+			["/static/logo-512.png", 200],
+			["/favicon.ico", 200],
+			["/favicon.png", 200],
+			["/apple-touch-icon.png", 200],
 			["/.well-known/oauth-authorization-server", 200],
 			["/.well-known/oauth-protected-resource/mcp", 200],
 			["/logout", 405],
@@ -408,7 +428,26 @@ describe("owner login", () => {
 			}),
 		});
 		expect(mcp.status).toBe(200);
-		await mcp.body?.cancel();
+		// The handshake names the server and advertises its icon as absolute
+		// https URLs on this environment's own origin.
+		const { serverInfo } = jsonRpcResult(await mcp.text()) as {
+			serverInfo: { name: string; title?: string; websiteUrl?: string; icons?: { src: string; mimeType?: string; sizes?: string[] }[] };
+		};
+		expect(serverInfo.name).toBe("GoBridge");
+		expect(serverInfo.title).toBe("GoBridge");
+		expect(serverInfo.websiteUrl).toBe(BASE);
+		expect(serverInfo.icons).toEqual([
+			{ src: `${BASE}/static/logo.svg`, mimeType: "image/svg+xml", sizes: ["any"] },
+			{ src: `${BASE}/static/logo-256.png`, mimeType: "image/png", sizes: ["256x256"] },
+			{ src: `${BASE}/static/logo-512.png`, mimeType: "image/png", sizes: ["512x512"] },
+		]);
+		for (const icon of serverInfo.icons!) {
+			expect(icon.src.startsWith("https://")).toBe(true);
+			const file = await SELF.fetch(icon.src);
+			expect(file.status, icon.src).toBe(200);
+			expect(file.headers.get("Content-Type")).toBe(icon.mimeType);
+			await file.body?.cancel();
+		}
 
 		// Refresh tokens work.
 		const refreshed = await SELF.fetch(`${BASE}/token`, {

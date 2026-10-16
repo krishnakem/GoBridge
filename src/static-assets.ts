@@ -1,15 +1,31 @@
 /**
- * The two static files the HTML pages load, served from this origin so the CSP
- * can stay at style-src 'self' and script-src 'self' (nothing inline).
+ * The static files GoBridge serves from its own origin, so the CSP can stay at
+ * style-src 'self', script-src 'self' and img-src 'self' (nothing inline, no
+ * third-party hosts).
  *
- *   GET /static/app.css   layout and components for every page
- *   GET /static/menu.js   keyboard + click behaviour for the account menu,
- *                         and the profile-picture fallback
+ *   GET /static/app.css        layout and components for every page
+ *   GET /static/menu.js        keyboard + click behaviour for the account menu,
+ *                              and the profile-picture fallback
+ *   GET /static/logo.svg       the GoBridge logo (MCP connector icon, page brand)
+ *   GET /static/logo-256.png   the logo at 256x256 (MCP connector icon)
+ *   GET /static/logo-512.png   the logo at 512x512 (MCP connector icon)
+ *   GET /favicon.ico           the logo as a 16/32/48 px icon
+ *   GET /favicon.png           the logo at 64x64
+ *   GET /apple-touch-icon.png  the logo at 180x180
  *
  * These are public: they contain no data, no secrets, and nothing about the
- * owner. Nothing else is served under /static/.
+ * owner. Nothing else is served under /static/, and the three root paths are
+ * the only files served outside it. The logo bytes come from assets/logo/,
+ * bundled into the Worker as Data modules (wrangler.jsonc "rules"); the
+ * derived files are built by scripts/build-favicon.mjs and committed.
  */
 import { Hono } from "hono";
+import appleTouchIcon from "../assets/logo/apple-touch-icon.png";
+import faviconIco from "../assets/logo/favicon.ico";
+import logo256 from "../assets/logo/logo-256.png";
+import logo512 from "../assets/logo/logo-512.png";
+import favicon64 from "../assets/logo/logo-64.png";
+import logoSvg from "../assets/logo/logo.svg";
 
 export const APP_CSS = `*,*::before,*::after{box-sizing:border-box}
 html{-webkit-text-size-adjust:100%}
@@ -21,7 +37,8 @@ h2{font-size:15px;font-weight:600;margin:32px 0 8px}
 p{margin:0 0 12px}
 .muted{color:#71717a}
 .small{font-size:13px}
-.brand{font-size:15px;font-weight:600;letter-spacing:-.01em}
+.brand{display:flex;align-items:center;gap:8px;font-size:15px;font-weight:600;letter-spacing:-.01em}
+.brand-logo{width:22px;height:22px;flex:none;border-radius:5px}
 .icon{width:18px;height:18px;flex:none}
 
 /* Layout: phone first */
@@ -205,13 +222,86 @@ function contentHash(text: string): string {
 	}
 	return hash.toString(16).padStart(8, "0");
 }
+/** The same hash over raw bytes, for the logo files. */
+function bytesHash(bytes: ArrayBuffer): string {
+	const view = new Uint8Array(bytes);
+	let hash = 0x811c9dc5; // FNV-1a
+	for (let i = 0; i < view.length; i++) {
+		hash ^= view[i];
+		hash = Math.imul(hash, 0x01000193) >>> 0;
+	}
+	return hash.toString(16).padStart(8, "0");
+}
 export const STATIC_VERSION = contentHash(APP_CSS + MENU_JS);
+
+// ---------- Logo files ----------
+
+export type IconFile = {
+	/** Exact request path. */
+	path: string;
+	bytes: ArrayBuffer;
+	contentType: string;
+	/** Strong ETag: a content hash, so a day-old copy revalidates with a 304. */
+	etag: string;
+};
+
+function iconFile(path: string, bytes: ArrayBuffer, contentType: string): IconFile {
+	return { path, bytes, contentType, etag: `"${bytesHash(bytes)}"` };
+}
+
+/** Every logo file GoBridge serves, each at exactly one path. */
+export const ICON_FILES: readonly IconFile[] = [
+	iconFile("/favicon.ico", faviconIco, "image/x-icon"),
+	iconFile("/favicon.png", favicon64, "image/png"),
+	iconFile("/apple-touch-icon.png", appleTouchIcon, "image/png"),
+	iconFile("/static/logo.svg", logoSvg, "image/svg+xml"),
+	iconFile("/static/logo-256.png", logo256, "image/png"),
+	iconFile("/static/logo-512.png", logo512, "image/png"),
+];
+
+/** Changes whenever any logo file changes: the pages link the icons with ?v=<this>. */
+export const ICON_VERSION = contentHash(ICON_FILES.map((file) => file.etag).join(""));
+
+/** A versioned same-origin href for one of the ICON_FILES paths. */
+export function iconHref(path: "/favicon.png" | "/apple-touch-icon.png" | "/static/logo.svg"): string {
+	return `${path}?v=${ICON_VERSION}`;
+}
+
+/** The <link> tags every GoBridge HTML page puts in its <head>. */
+export const ICON_LINKS_HTML = `<link rel="icon" href="${iconHref("/favicon.png")}" sizes="64x64" type="image/png">
+<link rel="icon" href="${iconHref("/static/logo.svg")}" type="image/svg+xml">
+<link rel="apple-touch-icon" href="${iconHref("/apple-touch-icon.png")}">`;
+
+/**
+ * The icons advertised in the MCP initialize response (serverInfo.icons), as
+ * absolute URLs on this environment's own origin (BASE_URL): dev and
+ * production each point at themselves.
+ */
+export function mcpServerIcons(baseUrl: string): { src: string; mimeType: string; sizes: string[] }[] {
+	const absolute = (path: string) => new URL(path, baseUrl).href;
+	return [
+		{ src: absolute("/static/logo.svg"), mimeType: "image/svg+xml", sizes: ["any"] },
+		{ src: absolute("/static/logo-256.png"), mimeType: "image/png", sizes: ["256x256"] },
+		{ src: absolute("/static/logo-512.png"), mimeType: "image/png", sizes: ["512x512"] },
+	];
+}
+
+// ---------- Routes ----------
 
 const STATIC_HEADERS = {
 	// Safe to cache for a day: the pages link each file by content version.
 	"Cache-Control": "public, max-age=86400",
 	"X-Content-Type-Options": "nosniff",
 };
+
+/** True when an If-None-Match header names this ETag (strong or weak form, in a list or "*"). */
+function etagMatches(ifNoneMatch: string | undefined, etag: string): boolean {
+	if (!ifNoneMatch) return false;
+	return ifNoneMatch.split(",").some((candidate) => {
+		const tag = candidate.trim().replace(/^W\//, "");
+		return tag === "*" || tag === etag;
+	});
+}
 
 const app = new Hono<{ Bindings: Env }>();
 
@@ -221,5 +311,20 @@ app.get("/static/app.css", (c) =>
 app.get("/static/menu.js", (c) =>
 	c.body(MENU_JS, 200, { ...STATIC_HEADERS, "Content-Type": "text/javascript; charset=utf-8" }),
 );
+
+for (const file of ICON_FILES) {
+	app.get(file.path, (c) => {
+		const headers: Record<string, string> = { ...STATIC_HEADERS, ETag: file.etag };
+		if (file.contentType === "image/svg+xml") {
+			// An SVG opened directly is a document: forbid scripts and loads, and
+			// sandbox it. Presentation attributes are unaffected; <img> use is too.
+			headers["Content-Security-Policy"] = "default-src 'none'; style-src 'unsafe-inline'; sandbox";
+		}
+		if (etagMatches(c.req.header("If-None-Match"), file.etag)) {
+			return c.body(null, 304, headers);
+		}
+		return c.body(file.bytes, 200, { ...headers, "Content-Type": file.contentType });
+	});
+}
 
 export { app as StaticAssets };

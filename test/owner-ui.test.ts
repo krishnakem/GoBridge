@@ -6,7 +6,7 @@ import { LINK_SCOPES, TOOL_SCOPES } from "../src/google";
 import { clearAccessTokenCache } from "../src/google-api";
 import { OwnerPages } from "../src/owner-pages";
 import { runReadTool } from "../src/tools";
-import { APP_CSS, MENU_JS } from "../src/static-assets";
+import { APP_CSS, ICON_LINKS_HTML, iconHref, MENU_JS } from "../src/static-assets";
 
 const BASE = "https://gobridge.test";
 const OWNER_CLAIMS = { sub: "owner-sub-1", email: "owner@example.com", email_verified: true };
@@ -98,9 +98,12 @@ describe("owner page layout and account menu", () => {
 				expect(html.match(new RegExp(`<a href="${item}"`, "g")), item).toHaveLength(2);
 			}
 			expect(html).toContain('aria-haspopup="menu" aria-label="Account"');
-			// Initial of the owner email, no profile photo.
+			// Initial of the owner email, no profile photo. The only images are
+			// the two brand logos (sidebar + top bar), from this origin.
 			expect(html).toContain('<span class="avatar avatar-22" aria-hidden="true">O</span>');
-			expect(html).not.toContain("<img");
+			expect(html).not.toContain('<img class="avatar-img"');
+			expect(html.match(/<img /g)).toHaveLength(2);
+			expect(html.match(/<img class="brand-logo" src="\/favicon\.png\?v=[0-9a-f]{8}" alt="" width="22" height="22">/g)).toHaveLength(2);
 			expect(html).not.toContain("googleusercontent");
 
 			// Sidebar + bottom tabs, with the current page marked.
@@ -123,16 +126,21 @@ describe("owner page layout and account menu", () => {
 			expect(csp).toContain("frame-ancestors 'none'");
 			expect(csp).toContain("base-uri 'none'");
 			expect(csp).toContain("form-action 'self' https://accounts.google.com");
-			// Profile pictures: owner pages may load images from this origin and
-			// Google's picture host only. The public page has no images at all.
-			if (page === "/signed-out") expect(csp).not.toContain("img-src");
-			else expect(csp).toContain("img-src 'self' https://lh3.googleusercontent.com");
+			// Images: the logo from this origin on every page; owner pages may also
+			// load profile pictures from Google's picture host, nothing else.
+			if (page === "/signed-out") expect(csp).toContain("img-src 'self';");
+			else expect(csp).toContain("img-src 'self' https://lh3.googleusercontent.com;");
+			expect(csp.match(/img-src/g)).toHaveLength(1);
 			expect(csp).not.toMatch(/img-src[^;]*\*/);
 			expect(res.headers.get("X-Frame-Options")).toBe("DENY");
 			expect(res.headers.get("Referrer-Policy")).toBe("no-referrer");
 
 			const html = await res.text();
 			expect(html).toMatch(/<link rel="stylesheet" href="\/static\/app\.css\?v=[0-9a-f]{8}">/);
+			// The favicon links, same on every page, all pointing at this origin.
+			expect(html).toContain(ICON_LINKS_HTML);
+			expect(html).toContain(`<link rel="icon" href="${iconHref("/favicon.png")}" sizes="64x64" type="image/png">`);
+			expect(html).toContain(`<img class="brand-logo" src="${iconHref("/favicon.png")}" alt="" width="22" height="22">GoBridge`);
 			expect(html).toMatch(/<script src="\/static\/menu\.js\?v=[0-9a-f]{8}" defer><\/script>/);
 			// No inline scripts, inline styles, or inline event handlers.
 			expect(html.match(/<script/g)).toHaveLength(1);
@@ -159,7 +167,9 @@ describe("owner profile picture", () => {
 		const owner = await signIn();
 		for (const page of OWNER_PAGES) {
 			const html = await (await get(page, owner.cookie)).text();
-			expect(html.match(/<img /g), page).toHaveLength(2);
+			// Two profile pictures (sidebar + top bar); the other two images are the brand logo.
+			expect(html.match(/<img class="avatar-img"/g), page).toHaveLength(2);
+			expect(html.match(/<img /g), page).toHaveLength(4);
 			expect(html).toContain(
 				`<span class="avatar avatar-22" aria-hidden="true">${pictureImg(22)}O</span>`,
 			);
@@ -193,7 +203,7 @@ describe("owner profile picture", () => {
 		await env.OAUTH_KV.put(`owner:session:${session.sid}`, "1");
 		const old = await (await get("/link", owner.cookie)).text();
 		expect(old).toContain('<span class="avatar avatar-22" aria-hidden="true">O</span>');
-		expect(old).not.toContain("<img");
+		expect(old).not.toContain('<img class="avatar-img"');
 		expect(old).not.toContain("Owner Name");
 		expect(old).toContain('<span class="account-label">owner@example.com</span>');
 	});
@@ -231,7 +241,8 @@ describe("owner profile picture", () => {
 			mockGoogle(undefined, { ...OWNER_CLAIMS, picture });
 			const owner = await signIn();
 			const html = await (await get("/link", owner.cookie)).text();
-			expect(html, String(picture)).not.toContain("<img");
+			expect(html, String(picture)).not.toContain('<img class="avatar-img"');
+			expect(html.match(/<img /g), String(picture)).toHaveLength(2); // the brand logos only
 			expect(html).not.toContain("evil.example");
 			expect(html).toContain('<span class="avatar avatar-22" aria-hidden="true">O</span>');
 		}
@@ -245,7 +256,7 @@ describe("owner profile picture", () => {
 });
 
 describe("static assets", () => {
-	it("serves only the two expected files, with the right content types", async () => {
+	it("serves only the expected files, with the right content types", async () => {
 		const css = await get("/static/app.css");
 		expect(css.status).toBe(200);
 		expect(css.headers.get("Content-Type")).toBe("text/css; charset=utf-8");
@@ -271,6 +282,17 @@ describe("static assets", () => {
 			"/static/wrangler.jsonc",
 			"/static/..%2fwrangler.jsonc",
 			"/static/src/index.ts",
+			// Logo files that exist in assets/logo/ but are not served (see icons.test.ts for the ones that are).
+			"/static/logo-32.png",
+			"/static/logo-64.png",
+			"/static/logo-1024.png",
+			"/static/favicon.ico",
+			"/static/apple-touch-icon.png",
+			"/static/logo.png",
+			"/static/logo-256.PNG",
+			"/static/logo.svg/",
+			"/logo.svg",
+			"/favicon.svg",
 		]) {
 			const res = await get(path);
 			expect(res.status, path).toBe(404);

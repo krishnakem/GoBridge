@@ -36,6 +36,10 @@
 	"dev": {
 		"port": 8788
 	},
+	// The logo files (assets/logo/) are bundled into the Worker as raw bytes and
+	// served by src/static-assets.ts, so no extra asset binding or route layer
+	// sits in front of the Worker. Inherited by both environments.
+	"rules": [{ "type": "Data", "globs": ["**/*.png", "**/*.svg", "**/*.ico"], "fallthrough": true }],
 	"migrations": [
 		{
 			"new_sqlite_classes": ["GoBridgeMCP"],
