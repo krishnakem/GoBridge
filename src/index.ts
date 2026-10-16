@@ -5,15 +5,21 @@ import { checkClient } from "./allowed-clients";
 import { isAllowedEmail } from "./auth";
 import { GoogleHandler } from "./google-handler";
 import { purgeOldAudit } from "./guardrails";
+import { mcpServerIcons } from "./static-assets";
 import type { Props } from "./utils";
 import { registerTools } from "./tools";
 
 export { UsageCounter } from "./usage-counter";
 
 export class GoBridgeMCP extends McpAgent<Env, Record<string, never>, Props> {
+	// serverInfo for the MCP initialize response. The icons are absolute URLs
+	// on this environment's own origin (BASE_URL), served by src/static-assets.ts.
 	server = new McpServer({
 		name: "GoBridge",
+		title: "GoBridge",
 		version: "0.0.1",
+		websiteUrl: this.env.BASE_URL,
+		icons: mcpServerIcons(this.env.BASE_URL),
 	});
 
 	async init() {

@@ -1,18 +1,19 @@
 import { PICTURE_HOST } from "./auth";
-import { STATIC_VERSION } from "./static-assets";
+import { ICON_LINKS_HTML, iconHref, STATIC_VERSION } from "./static-assets";
 import { sanitizeText } from "./workers-oauth-utils";
 
 /**
  * Security headers for every HTML page GoBridge serves.
  *
- * Styles and the one menu script come only from this origin (/static/...):
- * no inline scripts, inline event handlers, or inline styles are allowed.
+ * Styles, the one menu script and images (the logo, favicon) come only from
+ * this origin (/static/..., /favicon.*): no inline scripts, inline event
+ * handlers, or inline styles are allowed.
  * form-action allows Google because sign-in/link forms POST and then redirect there.
  */
 export const HTML_SECURITY_HEADERS: Record<string, string> = {
 	"Cache-Control": "no-store",
 	"Content-Security-Policy":
-		"default-src 'none'; style-src 'self'; script-src 'self'; form-action 'self' https://accounts.google.com; frame-ancestors 'none'; base-uri 'none'",
+		"default-src 'none'; img-src 'self'; style-src 'self'; script-src 'self'; form-action 'self' https://accounts.google.com; frame-ancestors 'none'; base-uri 'none'",
 	"Content-Type": "text/html; charset=utf-8",
 	"Referrer-Policy": "no-referrer",
 	"X-Content-Type-Options": "nosniff",
@@ -25,9 +26,12 @@ export const HTML_SECURITY_HEADERS: Record<string, string> = {
  * identical to HTML_SECURITY_HEADERS.
  */
 export const OWNER_PAGE_CSP = HTML_SECURITY_HEADERS["Content-Security-Policy"].replace(
-	"default-src 'none'; ",
-	`default-src 'none'; img-src 'self' https://${PICTURE_HOST}; `,
+	"img-src 'self'; ",
+	`img-src 'self' https://${PICTURE_HOST}; `,
 );
+
+/** The GoBridge wordmark with the small logo beside it (same-origin image, no data). */
+const BRAND_HTML = `<img class="brand-logo" src="${iconHref("/favicon.png")}" alt="" width="22" height="22">GoBridge`;
 
 /** Escapes text for use in HTML content or attribute values. */
 export const escapeHtml = sanitizeText;
@@ -51,6 +55,7 @@ function renderDocument(
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
 <title>GoBridge | ${escapeHtml(title)}</title>
+${ICON_LINKS_HTML}
 <link rel="stylesheet" href="/static/app.css?v=${STATIC_VERSION}">
 <script src="/static/menu.js?v=${STATIC_VERSION}" defer></script>
 </head>
@@ -76,7 +81,7 @@ export function renderPage(
 		title,
 		"simple",
 		`<main class="simple-main">
-<div class="brand">GoBridge</div>
+<div class="brand">${BRAND_HTML}</div>
 ${bodyHtml}
 </main>`,
 		status,
@@ -255,7 +260,7 @@ export function renderOwnerPage(options: {
 		"app",
 		`<div class="shell">
 <aside class="sidebar">
-<div class="brand">GoBridge</div>
+<div class="brand">${BRAND_HTML}</div>
 <nav class="side-nav" aria-label="Main">
 ${navLinks(active, attention, true)}
 </nav>
@@ -265,7 +270,7 @@ ${accountMenu("row", session, attention)}
 </aside>
 <div class="main-col">
 <header class="topbar">
-<span class="brand">GoBridge</span>
+<span class="brand">${BRAND_HTML}</span>
 ${accountMenu("avatar", session, attention)}
 </header>
 <main class="content">
