@@ -39,3 +39,6 @@ md-backup/
 coverage/
 *.pem
 *.key
+
+# LinkedIn post visual (TikZ source + renders) — keep local
+linkedin/

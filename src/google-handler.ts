@@ -117,6 +117,8 @@ app.get("/authorize", async (c) => {
 		csrfToken,
 		server: {
 			description: "GoBridge is a private MCP server. Only its owner can sign in.",
+			// Same origin as the page, so the dialog's img-src 'self' allows it.
+			logo: new URL("/static/logo-256.png", c.req.url).href,
 			name: "GoBridge",
 		},
 		setCookie,
@@ -300,7 +302,8 @@ app.get("/callback", async (c) => {
 // /clients/revoke, /settings, /logout (plus the public /signed-out notice)
 app.route("/", LinkHandler);
 app.route("/", OwnerPages);
-// Public, data-free CSS and JS for the pages above: /static/app.css, /static/menu.js
+// Public, data-free files: /static/app.css, /static/menu.js and the logo
+// (/favicon.ico, /favicon.png, /apple-touch-icon.png, /static/logo*.{svg,png})
 app.route("/", StaticAssets);
 
 export { app as GoogleHandler };

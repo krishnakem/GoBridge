@@ -2,6 +2,7 @@
 // OAuth utility functions with CSRF and state validation security fixes
 
 import type { AuthRequest, ClientInfo } from "@cloudflare/workers-oauth-provider";
+import { ICON_LINKS_HTML } from "./static-assets";
 
 /**
  * OAuth 2.1 compliant error class.
@@ -493,6 +494,7 @@ export function renderApprovalDialog(request: Request, options: ApprovalDialogOp
         <meta charset="UTF-8">
         <meta name="viewport" content="width=device-width, initial-scale=1.0">
         <title>${clientName} | Authorization Request</title>
+        ${ICON_LINKS_HTML}
         <style>
           :root {
             --primary-color: #0070f3;
@@ -778,7 +780,7 @@ export function renderApprovalDialog(request: Request, options: ApprovalDialogOp
 		headers: {
 			"Cache-Control": "no-store",
 			"Content-Security-Policy":
-				"default-src 'none'; style-src 'unsafe-inline'; form-action 'self' https://accounts.google.com; frame-ancestors 'none'; base-uri 'none'",
+				"default-src 'none'; img-src 'self'; style-src 'unsafe-inline'; form-action 'self' https://accounts.google.com; frame-ancestors 'none'; base-uri 'none'",
 			"Content-Type": "text/html; charset=utf-8",
 			"Referrer-Policy": "no-referrer",
 			"Set-Cookie": setCookie,
