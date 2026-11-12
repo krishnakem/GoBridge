@@ -461,7 +461,7 @@ describe("linking an account", () => {
 		expect(page).not.toContain(record.ciphertext);
 		// The account's picture sits left of its email; no name, no inline handlers.
 		expect(page).toContain(
-			`<span class="account-cell"><span class="avatar avatar-22" aria-hidden="true"><img class="avatar-img" src="${claims.picture}" alt="" width="22" height="22" referrerpolicy="no-referrer">L</span><span>${claims.email}</span></span>`,
+			`<span class="avatar avatar-32" aria-hidden="true"><img class="avatar-img" src="${claims.picture}" alt="" width="32" height="32" referrerpolicy="no-referrer">L</span>`,
 		);
 		expect(page).not.toContain("Linked Person");
 		expect(page).not.toMatch(/\son[a-z]+=/i);
@@ -483,9 +483,8 @@ describe("linking an account", () => {
 		expect(raw).not.toContain("evil.example");
 
 		const page = await (await SELF.fetch(`${BASE}/link`, { headers: { Cookie: session.cookie } })).text();
-		expect(page).toContain(
-			`<span class="avatar avatar-22" aria-hidden="true">L</span><span>${noPicture.claims.email}</span>`,
-		);
+		expect(page).toContain('<span class="avatar avatar-32" aria-hidden="true">L</span>');
+		expect(page).toContain(`<div class="card-sub">${noPicture.claims.email}</div>`);
 		expect(page).not.toContain("evil.example");
 	});
 

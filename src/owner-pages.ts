@@ -38,7 +38,8 @@ import {
 	writeUsage,
 	switchEnabled,
 } from "./guardrails";
-import { escapeHtml, renderMessagePage, renderOwnerPage } from "./html";
+import { clientLogoHtml } from "./client-logos";
+import { avatarHtml, escapeHtml, ICONS, renderMessagePage, renderOwnerPage } from "./html";
 import { ownerStatus } from "./owner-status";
 import { requireOwnerPost } from "./link-handler";
 import {
@@ -171,9 +172,9 @@ function redirectCell(uris: readonly string[], allowed: string[] | null): string
 					: isRedirectAllowed(uri, allowed)
 						? '<span class="badge badge-ok">Allowed</span>'
 						: '<span class="badge badge-alert">Not allowed</span>';
-			return `<span class="mono small">${escapeHtml(uri)}</span> ${badge}`;
+			return `<div><span class="mono small">${escapeHtml(uri)}</span> ${badge}</div>`;
 		})
-		.join("<br>");
+		.join("\n");
 }
 
 app.get("/clients", async (c) => {
@@ -198,30 +199,57 @@ app.get("/clients", async (c) => {
 			(b.registrationDate ?? 0) - (a.registrationDate ?? 0),
 	);
 
-	const rows = clients
+	// One card per client: logo, name, an overall Allowed / Not allowed badge and
+	// Revoke. The info button (a <details>) opens the id, dates and redirect URLs.
+	const cards = clients
 		.map((client) => {
 			const mine = active(client);
+			const uris = client.redirectUris ?? [];
+			const name = client.clientName || "(no name)";
 			const access = mine.length
-				? `Connected (${mine.length} grant${mine.length === 1 ? "" : "s"}, since ${escapeHtml(day(Math.min(...mine.map((g) => g.createdAt))))})`
+				? `Connected since ${escapeHtml(day(Math.min(...mine.map((g) => g.createdAt))))}`
 				: "Registered, not connected";
-			return `<tr>
-<td><strong>${escapeHtml(client.clientName || "(no name)")}</strong><br><span class="muted mono small">${escapeHtml(client.clientId)}</span></td>
-<td class="muted">${escapeHtml(day(client.registrationDate))}</td>
-<td>${redirectCell(client.redirectUris ?? [], allowed)}</td>
-<td>${access}</td>
-<td><form class="inline" method="post" action="/clients/revoke">
+			const ok =
+				uris.length > 0 && allowed !== null && uris.every((uri) => isRedirectAllowed(uri, allowed));
+			const badge =
+				allowed === null
+					? '<span class="badge">List unavailable</span>'
+					: ok
+						? '<span class="badge badge-ok">Allowed</span>'
+						: '<span class="badge badge-alert">Not allowed</span>';
+			return `<div class="card has-info${allowed !== null && !ok ? " card-alert" : ""}">
+<div>
+<div class="card-head">
+${clientLogoHtml(uris, name)}
+<div class="card-main">
+<div class="card-title"><strong>${escapeHtml(name)}</strong></div>
+<div class="card-sub">${access}</div>
+</div>
+</div>
+<details class="disclose card-info">
+<summary class="icon-btn" aria-label="Details for ${escapeHtml(name)}" title="Details">${ICONS.info}</summary>
+<dl class="info-panel">
+<div><dt>Client ID</dt><dd class="mono">${escapeHtml(client.clientId)}</dd></div>
+<div><dt>Registered</dt><dd>${escapeHtml(day(client.registrationDate)) || "unknown"}</dd></div>
+<div><dt>Access</dt><dd>${mine.length ? `${mine.length} grant${mine.length === 1 ? "" : "s"}` : "No grants"}</dd></div>
+<div><dt>Redirect URLs</dt><dd class="url-list">${redirectCell(uris, allowed)}</dd></div>
+</dl>
+</details>
+</div>
+<div class="card-foot">${badge}
+<form class="push" method="post" action="/clients/revoke">
 <input type="hidden" name="csrf_token" value="${csrf}">
 <input type="hidden" name="client_id" value="${escapeHtml(client.clientId)}">
 <button class="btn-danger" type="submit">Revoke</button>
-</form></td>
-</tr>`;
+</form>
+</div>
+</div>`;
 		})
 		.join("\n");
 	const table = clients.length
-		? `<div class="table-wrap"><table>
-<tr><th>AI client</th><th>Registered</th><th>Redirect URLs</th><th>Access</th><th></th></tr>
-${rows}
-</table></div>`
+		? `<div class="cards">
+${cards}
+</div>`
 		: `<p class="muted">No AI clients have registered yet.</p>`;
 
 	const notice = NOTICES[c.req.query("msg") ?? ""];
@@ -229,7 +257,7 @@ ${rows}
 		active: "/clients",
 		attention,
 		bodyHtml: `${notice ? `<p class="notice">${escapeHtml(notice)}</p>` : ""}
-<p class="muted">Every app that has registered with GoBridge. Names are chosen by the app itself, so judge an app by its redirect URLs: it can connect only when all of them are on the allowed list in Settings. Revoking a client cancels its tokens and removes its registration; other clients keep working. To use it again, add GoBridge in that app again.</p>
+<p class="muted">Every app that has registered with GoBridge. Names are chosen by the app itself, so judge an app by its redirect URLs (the info button on each card): it can connect only when all of them are on the allowed list in Settings. Revoking a client cancels its tokens and removes its registration; other clients keep working. To use it again, add GoBridge in that app again.</p>
 ${table}`,
 		session,
 		title: "AI clients",
@@ -280,37 +308,65 @@ const SETTINGS_NOTICES: Record<string, string> = {
 	removed: "Redirect URL removed. Apps that use it are cut off at once.",
 };
 
+/** The host of an allowed redirect URL, for its card title; the URL itself if it does not parse. */
+function hostOf(uri: string): string {
+	try {
+		return new URL(uri).hostname || uri;
+	} catch (_e) {
+		return uri;
+	}
+}
+
+/** One usage meter: "3 of 25" over a bar filled in tenths (classes, since inline styles are not allowed). */
+export function meterHtml(label: string, used: number | undefined, limit: number): string {
+	if (used === undefined) {
+		return `<div><span class="meter-top"><span>${label}</span><span>unavailable</span></span><span class="meter-track"><span class="meter-fill meter-0"></span></span></div>`;
+	}
+	const ratio = limit > 0 ? used / limit : 1;
+	const tenths = Math.min(10, Math.max(used > 0 ? 1 : 0, Math.round(ratio * 10)));
+	return `<div${ratio >= 0.9 ? ' class="meter-high"' : ""}><span class="meter-top"><span>${label}</span><span>${used} of ${limit}</span></span><span class="meter-track"><span class="meter-fill meter-${tenths}"></span></span></div>`;
+}
+
 /** The allowed AI clients section of /settings: the list, Remove buttons and the add form. */
 function allowedClientsSection(allowed: string[] | null, csrf: string): string {
 	const list =
 		allowed === null
 			? '<p class="warn">The allowed list could not be read just now, so every AI client is being refused. Reload the page to try again.</p>'
 			: allowed.length
-				? `<div class="table-wrap"><table>
-<tr><th>Redirect URL</th><th></th></tr>
-${allowed
-	.map(
-		(uri) => `<tr>
-<td class="mono small">${escapeHtml(uri)}</td>
-<td><form class="inline" method="post" action="/settings/allowed-clients/remove">
-<input type="hidden" name="csrf_token" value="${csrf}">
-<input type="hidden" name="redirect_uri" value="${escapeHtml(uri)}">
-<button class="btn-danger" type="submit">Remove</button>
-</form></td>
-</tr>`,
-	)
-	.join("\n")}
-</table></div>`
+				? ""
 				: '<p class="warn">The list is empty, so no AI client can connect. Add the redirect URL of each app you use.</p>';
 	return `<h2>Allowed AI clients</h2>
 <p class="muted">An AI app can sign in and use GoBridge only when every redirect URL it registered is on this list. Removing a URL cuts off the apps that use it at once. When an app that is not allowed tries to connect, GoBridge shows you the exact URL to add.</p>
 ${list}
+<div class="cards">
+${(allowed ?? [])
+	.map((uri) => {
+		const host = escapeHtml(hostOf(uri));
+		return `<div class="card">
+<div class="card-head">
+${clientLogoHtml([uri], hostOf(uri))}
+<div class="card-main">
+<div class="card-title"><strong>${host}</strong></div>
+<div class="card-sub mono">${escapeHtml(uri)}</div>
+</div>
+<form method="post" action="/settings/allowed-clients/remove">
+<input type="hidden" name="csrf_token" value="${csrf}">
+<input type="hidden" name="redirect_uri" value="${escapeHtml(uri)}">
+<button class="icon-btn icon-btn-danger" type="submit" aria-label="Remove ${host}" title="Remove">${ICONS.trash}</button>
+</form>
+</div>
+</div>`;
+	})
+	.join("\n")}
+<div class="card card-add">
+<div class="card-title"><strong><label for="redirect_uri">Allow a redirect URL</label></strong></div>
 <form class="field" method="post" action="/settings/allowed-clients">
 <input type="hidden" name="csrf_token" value="${csrf}">
-<label for="redirect_uri">Redirect URL</label>
 <input id="redirect_uri" type="url" name="redirect_uri" required maxlength="512" autocomplete="off">
 <button class="btn-primary" type="submit">Allow</button>
 </form>
+</div>
+</div>
 <p class="muted small">Exact URLs only, no wildcards. Loopback URLs (<code>localhost</code>, <code>127.0.0.1</code>) match on any port, for apps such as Claude Code. The AI clients page shows the redirect URLs each registered app uses. At most ${MAX_ALLOWED_REDIRECTS} URLs.</p>`;
 }
 
@@ -328,27 +384,32 @@ app.get("/settings", async (c) => {
 	const csrf = escapeHtml(session.csrf);
 	const notice = SETTINGS_NOTICES[c.req.query("msg") ?? ""];
 
-	const rows = accounts
-		.map(
-			(account, i) => `<tr>
-<td><strong>${escapeHtml(account.alias)}</strong><br><span class="muted small">${escapeHtml(account.email)}</span></td>
-<td>${usage[i] ? `${usage[i].sendsToday} of ${cap}` : "unavailable"}</td>
-<td>${usage[i] ? `${usage[i].writesThisHour} of ${WRITE_RATE_LIMIT_PER_HOUR}` : "unavailable"}</td>
-<td>${usage[i] ? `${usage[i].readsThisHour} of ${readRateLimit(c.env)}` : "unavailable"}</td>
-<td>${usage[i] ? `${usage[i].sharesToday} of ${DAILY_SHARE_CAP}` : "unavailable"}</td>
-<td>${
-				attention.relink.includes(account.alias)
-					? '<span class="badge badge-alert">Needs re-link</span>'
-					: '<span class="badge badge-ok">Linked</span>'
-			}</td>
-</tr>`,
-		)
+	const cards = accounts
+		.map((account, i) => {
+			const relink = attention.relink.includes(account.alias);
+			const used = usage[i];
+			return `<div class="card${relink ? " card-alert" : ""}">
+<div class="card-head">
+${avatarHtml(account.email, 32, account.picture)}
+<div class="card-main">
+<div class="card-title"><strong>${escapeHtml(account.alias)}</strong></div>
+<div class="card-sub">${escapeHtml(account.email)}</div>
+</div>
+${relink ? '<span class="badge badge-alert">Needs re-link</span>' : '<span class="badge badge-ok">Linked</span>'}
+</div>
+<div class="meters">
+${meterHtml("Emails sent today (UTC)", used?.sendsToday, cap)}
+${meterHtml("Writes this hour", used?.writesThisHour, WRITE_RATE_LIMIT_PER_HOUR)}
+${meterHtml("Reads this hour", used?.readsThisHour, readRateLimit(c.env))}
+${meterHtml("Files shared today", used?.sharesToday, DAILY_SHARE_CAP)}
+</div>
+</div>`;
+		})
 		.join("\n");
 	const table = accounts.length
-		? `<div class="table-wrap"><table>
-<tr><th>Account</th><th>Emails sent today (UTC)</th><th>Writes this hour</th><th>Reads this hour</th><th>Files shared today</th><th>Status</th></tr>
-${rows}
-</table></div>`
+		? `<div class="cards">
+${cards}
+</div>`
 		: `<p class="muted">No accounts linked yet.</p>`;
 
 	const switchRows = KILL_SWITCHES.map((name) => {

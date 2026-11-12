@@ -164,6 +164,18 @@ export function avatarHtml(email: string, size: 22 | 32, picture?: string): stri
 const icon = (paths: string) =>
 	`<svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">${paths}</svg>`;
 
+/** Icons for the card actions on the owner pages (inline SVG, no data). */
+export const ICONS = {
+	info: icon('<circle cx="12" cy="12" r="9"/><path d="M12 11v5M12 8h.01"/>'),
+	pencil: icon('<path d="M4 20h4L19 9l-4-4L4 16v4z"/><path d="M13.5 6.5l4 4"/>'),
+	plus: icon('<path d="M12 5v14M5 12h14"/>'),
+	trash: icon('<path d="M4 7h16M10 11v6M14 11v6M6 7l1 13h10l1-13M9 7V4h6v3"/>'),
+	/** A broken chain link. */
+	unlink: icon(
+		'<path d="M10 14a4 4 0 0 1 0-5.6l2-2a4 4 0 0 1 5.6 5.6l-.8.8"/><path d="M14 10a4 4 0 0 1 0 5.6l-2 2a4 4 0 0 1-5.6-5.6l.8-.8"/><path d="M4 4l3 3M20 20l-3-3M9 3v2M3 9h2M15 21v-2M21 15h-2"/>',
+	),
+};
+
 const NAV: { href: OwnerPath; label: string; icon: string }[] = [
 	{
 		href: "/link",

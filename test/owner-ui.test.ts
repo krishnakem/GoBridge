@@ -364,7 +364,9 @@ describe("/settings", () => {
 		expect(html).toContain("2 hours, then you sign in again");
 		expect(html).toContain('<span class="badge badge-ok">On</span>');
 		expect(html).toContain("settings-acct");
-		expect(html).toContain("<td>3 of 25</td>");
+		// Usage is one card per account, each count a meter filled in tenths.
+		expect(html).toContain('<span>Emails sent today (UTC)</span><span>3 of 25</span></span><span class="meter-track"><span class="meter-fill meter-1"></span>');
+		expect(html).not.toContain("<table");
 		expect(html).toContain("https://gobridge.test");
 		// Sign-out (twice: sidebar and top bar) plus the one "allow a redirect URL" form.
 		expect(html.match(/<form /g)).toHaveLength(3);
@@ -481,7 +483,7 @@ describe("stale scopes", () => {
 		expect(html).not.toContain("Needs re-link");
 		expect(html).not.toContain("nav-flag");
 		// The initial-letter avatar stands in for the missing picture.
-		expect(html).toContain('<span class="avatar avatar-22" aria-hidden="true">N</span>');
+		expect(html).toContain('<span class="avatar avatar-32" aria-hidden="true">N</span>');
 		const settings = await (await get("/settings", owner.cookie)).text();
 		expect(settings).not.toContain("needing re-link");
 		await deleteAccount(env, "no-profile");
@@ -505,7 +507,7 @@ describe("stale scopes", () => {
 		});
 		const owner = await signIn();
 		const html = await (await get("/link", owner.cookie)).text();
-		expect(html).toContain('<span class="badge badge-ok">Linked</span><br><span class="muted small">Re-link for Drive Activity</span>');
+		expect(html).toContain('<span class="badge badge-ok">Linked</span><span class="muted small">Re-link for Drive Activity</span>');
 		expect(html.match(/Re-link for Drive Activity/g)).toHaveLength(1);
 		expect(html).not.toContain('class="dot"');
 		expect(html).not.toContain("Re-link needed");
@@ -674,7 +676,10 @@ describe("/settings allowed AI clients", () => {
 
 		const html = await (await get("/settings?msg=allowed", owner.cookie)).text();
 		expect(html).toContain("Redirect URL allowed.");
-		expect(html).toContain(`<td class="mono small">${CLAUDE}</td>`);
+		// One card per allowed URL: the host, the full URL, and the real logo for a known host.
+		expect(html).toContain(`<div class="card-title"><strong>claude.ai</strong></div>\n<div class="card-sub mono">${CLAUDE}</div>`);
+		expect(html).toContain('<svg class="logo-claude" viewBox="0 0 24 24" role="img" aria-label="Claude">');
+		expect(html).toMatch(/<button class="icon-btn icon-btn-danger" type="submit" aria-label="Remove claude\.ai" title="Remove">/);
 		expect(html).toContain('action="/settings/allowed-clients/remove"');
 		expect(html).toContain(`<input type="hidden" name="redirect_uri" value="${CLAUDE}">`);
 		expect(html).not.toContain("The list is empty");
@@ -757,7 +762,13 @@ describe("/settings allowed AI clients", () => {
 		});
 		expect(register.status).toBe(201);
 		const html = await (await get("/clients", owner.cookie)).text();
-		expect(html).toContain("<th>Redirect URLs</th>");
+		// A card per client. One unlisted URL: no brand logo (letter tile) and "Not allowed" overall.
+		expect(html).toContain("<dt>Redirect URLs</dt>");
+		expect(html).toContain('<span class="client-logo" aria-hidden="true">T</span>');
+		expect(html).not.toContain("logo-claude");
+		expect(html).toContain('<div class="card-foot"><span class="badge badge-alert">Not allowed</span>');
+		expect(html).toContain('<details class="disclose card-info">');
+		expect(html).toMatch(/<form class="push" method="post" action="\/clients\/revoke">\n<input type="hidden" name="csrf_token" value="[^"]+">\n<input type="hidden" name="client_id" value="[^"]+">\n<button class="btn-danger" type="submit">Revoke<\/button>/);
 		expect(html).toContain(`<span class="mono small">${CLAUDE}</span> <span class="badge badge-ok">Allowed</span>`);
 		expect(html).toContain(
 			'<span class="mono small">https://unlisted.example/cb</span> <span class="badge badge-alert">Not allowed</span>',

@@ -29,7 +29,14 @@ import {
 	revokeGoogleToken,
 } from "./google";
 import { carryOverUsage, recordAudit } from "./guardrails";
-import { type Attention, avatarHtml, escapeHtml, renderMessagePage, renderOwnerPage } from "./html";
+import {
+	type Attention,
+	avatarHtml,
+	escapeHtml,
+	ICONS,
+	renderMessagePage,
+	renderOwnerPage,
+} from "./html";
 import { ownerStatus } from "./owner-status";
 import { hasValidCsrf, type OwnerSession, readOwnerSession, startOwnerLogin } from "./session";
 
@@ -95,42 +102,59 @@ function renderLinkPage(
 		? `<p class="${note.warn ? "warn" : "notice"}">${escapeHtml(note.text)}</p>`
 		: "";
 
-	const rows = accounts
-		.map(
-			(account) => `<tr>
-<td><strong>${escapeHtml(account.alias)}</strong></td>
-<td><span class="account-cell">${avatarHtml(account.email, 22, account.picture)}<span>${escapeHtml(account.email)}</span></span></td>
-<td>${
-				attention.relink.includes(account.alias)
+	// One card per account. Rename hides behind the pencil (a <details>, shown
+	// when the card is hovered or focused); the broken-chain button unlinks.
+	const cards = accounts
+		.map((account) => {
+			const alias = escapeHtml(account.alias);
+			const relink = attention.relink.includes(account.alias);
+			return `<div class="card${relink ? " card-alert" : ""}">
+<div class="card-head">
+${avatarHtml(account.email, 32, account.picture)}
+<div class="card-main">
+<div class="card-title"><strong>${alias}</strong>
+<details class="disclose rename">
+<summary class="icon-btn reveal" aria-label="Rename ${alias}" title="Rename">${ICONS.pencil}</summary>
+<form method="post" action="/link/rename">
+<input type="hidden" name="csrf_token" value="${csrf}">
+<input type="hidden" name="alias" value="${alias}">
+<input type="text" name="newAlias" required maxlength="32" pattern="[a-z0-9]([a-z0-9-]{0,30}[a-z0-9])?" autocomplete="off" aria-label="New alias for ${alias}" placeholder="new alias">
+<button type="submit">Rename</button>
+</form>
+</details>
+</div>
+<div class="card-sub">${escapeHtml(account.email)}</div>
+</div>
+<form method="post" action="/link/unlink">
+<input type="hidden" name="csrf_token" value="${csrf}">
+<input type="hidden" name="alias" value="${alias}">
+<button class="icon-btn icon-btn-danger" type="submit" aria-label="Unlink ${alias}" title="Unlink">${ICONS.unlink}</button>
+</form>
+</div>
+<div class="card-foot">${
+				relink
 					? '<span class="badge badge-alert">Needs re-link</span>'
 					: '<span class="badge badge-ok">Linked</span>'
 			}${
-				!attention.relink.includes(account.alias) && !hasDriveActivityScope(account.scopes)
-					? '<br><span class="muted small">Re-link for Drive Activity</span>'
+				!relink && !hasDriveActivityScope(account.scopes)
+					? '<span class="muted small">Re-link for Drive Activity</span>'
 					: ""
-			}</td>
-<td class="muted">${escapeHtml(account.linkedAt.slice(0, 10))}</td>
-<td><form class="inline" method="post" action="/link/rename">
-<input type="hidden" name="csrf_token" value="${csrf}">
-<input type="hidden" name="alias" value="${escapeHtml(account.alias)}">
-<input type="text" name="newAlias" required maxlength="32" pattern="[a-z0-9]([a-z0-9-]{0,30}[a-z0-9])?" autocomplete="off" aria-label="New alias for ${escapeHtml(account.alias)}" placeholder="new alias">
-<button type="submit">Rename</button>
-</form>
-<form class="inline" method="post" action="/link/unlink">
-<input type="hidden" name="csrf_token" value="${csrf}">
-<input type="hidden" name="alias" value="${escapeHtml(account.alias)}">
-<button class="btn-danger" type="submit">Unlink</button>
-</form></td>
-</tr>`,
-		)
+			}<span class="muted small push">${escapeHtml(account.linkedAt.slice(0, 10))}</span></div>
+</div>`;
+		})
 		.join("\n");
 
-	const table = accounts.length
-		? `<div class="table-wrap"><table>
-<tr><th>Alias</th><th>Google account</th><th>Status</th><th>Linked</th><th></th></tr>
-${rows}
-</table></div>`
-		: `<p class="muted">No accounts linked yet.</p>`;
+	const table = `${accounts.length ? "" : '<p class="muted">No accounts linked yet.</p>\n'}<div class="cards">
+${cards}
+<div class="card card-add">
+<div class="card-title"><strong>Link a Google account</strong></div>
+<form class="field" method="post" action="/link">
+<input type="hidden" name="csrf_token" value="${csrf}">
+<input id="alias" type="text" name="alias" required maxlength="32" pattern="[a-z0-9]([a-z0-9-]{0,30}[a-z0-9])?" autocomplete="off" aria-label="Alias" placeholder="alias, e.g. personal">
+<button class="btn-primary" type="submit">Continue to Google</button>
+</form>
+</div>
+</div>`;
 	const relinkHelp = attention.relink.length
 		? `<p class="warn">Needs re-link: ${escapeHtml(attention.relink.join(", "))}. Either Google no longer accepts GoBridge's access, or the account was linked before the current permissions were added. Unlink each one, then link it again with the same alias.</p>`
 		: "";
@@ -140,15 +164,7 @@ ${rows}
 		attention,
 		bodyHtml: `${noteHtml}${relinkHelp}
 ${table}
-<h2>Link a Google account</h2>
-<p>Pick a short alias (for example <code>personal</code>). AI clients use it to say which account to act on.</p>
-<form class="field" method="post" action="/link">
-<input type="hidden" name="csrf_token" value="${csrf}">
-<label for="alias">Alias</label>
-<input id="alias" type="text" name="alias" required maxlength="32" pattern="[a-z0-9]([a-z0-9-]{0,30}[a-z0-9])?" autocomplete="off">
-<button class="btn-primary" type="submit">Continue to Google</button>
-</form>
-<p class="muted small">Lowercase letters, numbers and hyphens only. On Google's screen, leave every permission ticked: GoBridge refuses a partial grant.</p>
+<p class="muted small">To link an account, pick a short alias (for example <code>personal</code>); AI clients use it to say which account to act on. Lowercase letters, numbers and hyphens only. On Google's screen, leave every permission ticked: GoBridge refuses a partial grant.</p>
 <p class="muted small">Renaming keeps the account's access, picture and today's usage limits; past audit entries keep the old alias.</p>`,
 		session,
 		title: "Linked accounts",

@@ -111,6 +111,55 @@ input[type=url]{width:28rem}
 .facts dt{color:#71717a;font-size:13px;margin-top:10px}
 .facts dd{margin:0}
 
+/* Cards: linked accounts, AI clients, allowed URLs, usage */
+.cards{display:grid;grid-template-columns:repeat(auto-fill,minmax(260px,1fr));gap:12px;margin:0 0 12px}
+.card{position:relative;display:flex;flex-direction:column;gap:12px;min-width:0;padding:16px;border:1px solid #e4e4e7;border-radius:10px;background:#fff}
+.card form{margin:0}
+.card-alert{border-color:#fca5a5}
+.card-add{border-style:dashed}
+.card-add p{margin:0}
+.card-head{display:flex;align-items:flex-start;gap:10px;min-width:0}
+.has-info .card-head{padding-right:30px}
+.card-main{flex:1;min-width:0}
+.card-title{display:flex;flex-wrap:wrap;align-items:center;gap:2px 4px;min-height:28px}
+.card-title strong{font-weight:600;overflow-wrap:anywhere}
+.card-sub{color:#71717a;font-size:13px;overflow-wrap:anywhere}
+.card-foot{display:flex;flex-wrap:wrap;align-items:center;gap:8px;margin-top:auto}
+.card-foot .push{margin-left:auto}
+.card .field{margin:0}
+.card input[type=text],.card input[type=url]{flex:1;width:auto;min-width:0}
+.icon-btn{display:flex;align-items:center;justify-content:center;flex:none;width:28px;height:28px;padding:0;border:0;border-radius:6px;background:none;color:#71717a;cursor:pointer}
+.icon-btn .icon{width:16px;height:16px}
+.icon-btn:hover{background:#fafafa;color:#18181b}
+.icon-btn:focus-visible{outline:2px solid #0284c7;outline-offset:2px}
+.icon-btn-danger:hover,.icon-btn-danger:focus-visible{background:#fef2f2;color:#b91c1c}
+/* Disclosures are <details>, so they open without JavaScript */
+.disclose>summary{list-style:none;-webkit-user-select:none;user-select:none}
+.disclose>summary::-webkit-details-marker{display:none}
+.disclose[open]>summary{background:#f4f4f5;color:#18181b}
+/* Shown when the card is hovered or focused; always shown where there is no hover */
+.reveal{opacity:0;transition:opacity .1s}
+.card:hover .reveal,.card:focus-within .reveal,.disclose[open]>.reveal{opacity:1}
+@media (hover:none){.reveal{opacity:1}}
+.rename[open]{flex-basis:100%}
+.rename form{display:flex;gap:6px;margin-top:6px}
+.card-info>summary{position:absolute;top:12px;right:12px}
+.info-panel{display:grid;gap:8px;margin:12px 0 0;padding-top:12px;border-top:1px solid #f4f4f5;font-size:13px}
+.info-panel dt{color:#71717a;font-size:12px}
+.info-panel dd{margin:0;overflow-wrap:anywhere}
+.url-list{display:grid;gap:6px}
+.client-logo{display:flex;align-items:center;justify-content:center;flex:none;width:36px;height:36px;border:1px solid #e4e4e7;border-radius:8px;background:#fff;color:#3f3f46;font-size:15px;font-weight:600}
+.client-logo svg{width:20px;height:20px}
+.logo-claude{fill:#d97757}
+.logo-chatgpt{fill:#18181b}
+.meters{display:grid;gap:10px}
+.meter-top{display:flex;justify-content:space-between;gap:8px;font-size:13px;font-variant-numeric:tabular-nums}
+.meter-top span:first-child{color:#52525b}
+.meter-track{display:block;height:4px;margin-top:4px;border-radius:9999px;background:#e4e4e7;overflow:hidden}
+.meter-fill{display:block;height:100%;border-radius:9999px;background:#0284c7}
+.meter-0{width:0}.meter-1{width:10%}.meter-2{width:20%}.meter-3{width:30%}.meter-4{width:40%}.meter-5{width:50%}.meter-6{width:60%}.meter-7{width:70%}.meter-8{width:80%}.meter-9{width:90%}.meter-10{width:100%}
+.meter-high .meter-fill{background:#dc2626}
+
 /* Pages without a session */
 .simple-main{max-width:420px;margin:0 auto;padding:15vh 20px 40px}
 .simple-main .brand{margin-bottom:24px}
