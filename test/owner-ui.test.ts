@@ -11,7 +11,7 @@ import { APP_CSS, ICON_LINKS_HTML, iconHref, MENU_JS } from "../src/static-asset
 const BASE = "https://gobridge.test";
 const OWNER_CLAIMS = { sub: "owner-sub-1", email: "owner@example.com", email_verified: true };
 const OWNER_PICTURE = "https://lh3.googleusercontent.com/a/owner-picture=s96-c";
-const OWNER_PAGES = ["/link", "/audit", "/clients", "/settings"];
+const OWNER_PAGES = ["/link", "/clients", "/settings"];
 const pictureImg = (size: number) =>
 	`<img class="avatar-img" src="${OWNER_PICTURE}" alt="" width="${size}" height="${size}" referrerpolicy="no-referrer">`;
 const PICTURE_IMG = pictureImg(32);
@@ -94,8 +94,10 @@ describe("owner page layout and account menu", () => {
 			expect(html).toContain('role="separator"');
 			// Without a name, the sidebar trigger shows the email.
 			expect(html).toContain('<span class="account-label">owner@example.com</span>');
-			for (const item of ["/link", "/audit", "/clients", "/settings"]) {
-				expect(html.match(new RegExp(`<a href="${item}"`, "g")), item).toHaveLength(2);
+			for (const item of ["/link", "/clients", "/settings"]) {
+				// Navigation links (sidebar + tab bar) start with their icon.
+				expect(html.match(new RegExp(`<a href="${item}"(?: aria-current="page")?><svg`, "g")), item).toHaveLength(2);
+				expect(html).not.toContain('<a href="/audit"');
 			}
 			expect(html).toContain('aria-haspopup="menu" aria-label="Account"');
 			// Initial of the owner email, no profile photo. The only images are
@@ -366,12 +368,17 @@ describe("/settings", () => {
 		expect(html).toContain("settings-acct");
 		// Usage is one card per account, each count a meter filled in tenths.
 		expect(html).toContain('<span>Emails sent today (UTC)</span><span>3 of 25</span></span><span class="meter-track"><span class="meter-fill meter-1"></span>');
-		expect(html).not.toContain("<table");
+		// Usage is cards, not a table (the only table on the page is All activity).
+		expect(html.split('id="activity"')[0]).not.toContain("<table");
 		expect(html).toContain("https://gobridge.test");
-		// Sign-out (twice: sidebar and top bar) plus the one "allow a redirect URL" form.
-		expect(html.match(/<form /g)).toHaveLength(3);
+		// Sign-out (twice: sidebar and top bar), the one "allow a redirect URL" form,
+		// and the All activity filter, which is a GET form and changes nothing.
+		expect(html.match(/<form /g)).toHaveLength(4);
+		expect(html.match(/<form [^>]*method="post"/gi)).toHaveLength(3);
+		expect(html).toContain('<form class="filters" method="get" action="/settings#activity">');
 		expect(html.match(/<input(?![^>]*type="hidden")[^>]*>/g)).toEqual([
 			'<input id="redirect_uri" type="url" name="redirect_uri" required maxlength="512" autocomplete="off">',
+			'<input type="checkbox" name="reads" value="show">',
 		]);
 		expect(html).toContain("<h2>Allowed AI clients</h2>");
 		expect(html).toContain("The list is empty, so no AI client can connect.");
@@ -382,26 +389,33 @@ describe("/settings", () => {
 	});
 });
 
-describe("/audit read filter", () => {
+describe("All activity read filter (was /audit)", () => {
 	it("hides reads by default and shows them, without content, when asked", async () => {
 		mockGoogle();
 		await runReadTool(env, "list_accounts", {}, { clientId: "client-filter-1", clientName: "Filter Client" });
-		const owner = await signIn("/audit");
+		const owner = await signIn("/settings");
 
-		const hidden = await (await get("/audit", owner.cookie)).text();
-		expect(hidden).toContain("<h1>Recent writes</h1>");
-		expect(hidden).toContain('<a href="/audit?reads=show">Show reads too</a>');
-		expect(hidden).not.toContain("client-filter-1");
+		// /audit is an owner-only redirect to All activity; it serves no content itself.
+		const anonymous = await get("/audit");
+		expect(new URL(anonymous.headers.get("Location")!).hostname).toBe("accounts.google.com");
+		const moved = await get("/audit", owner.cookie);
+		expect(moved.status).toBe(302);
+		expect(moved.headers.get("Location")).toBe("/settings#activity");
+		expect(await moved.text()).toBe("");
+		expect((await get("/audit?reads=show", owner.cookie)).headers.get("Location")).toBe(
+			"/settings?reads=show#activity",
+		);
 
-		const shown = await (await get("/audit?reads=show", owner.cookie)).text();
-		expect(shown).toContain("<h1>Recent writes and reads</h1>");
-		expect(shown).toContain('<a href="/audit">Hide reads</a>');
-		expect(shown).toContain("client-filter-1");
+		const hidden = await (await get("/settings", owner.cookie)).text();
+		expect(hidden).toContain("<h2>All activity</h2>");
+		expect(hidden).toContain('<input type="checkbox" name="reads" value="show"> Show reads too');
+		expect(hidden).not.toContain("Filter Client");
+
+		const shown = await (await get("/settings?reads=show", owner.cookie)).text();
+		expect(shown).toContain('<input type="checkbox" name="reads" value="show" checked> Show reads too');
 		expect(shown).toContain("Filter Client");
 		expect(shown).toContain('<strong>list_accounts</strong> <span class="badge">read</span>');
 		expect(shown).toMatch(/Items returned: \d+/);
-		// The filter is a link, not a form: nothing to submit and no state change.
-		expect(shown.match(/<form /g)).toHaveLength(2);
 	});
 });
 
@@ -409,7 +423,7 @@ describe("attention dot", () => {
 	it("is hidden when everything is fine and shown when writes are off", async () => {
 		mockGoogle();
 		const owner = await signIn();
-		const fine = await (await get("/audit", owner.cookie)).text();
+		const fine = await (await get("/clients", owner.cookie)).text();
 		expect(fine).not.toContain('class="dot"');
 		expect(fine).not.toContain("needs attention");
 		expect(fine).not.toContain("nav-flag");
@@ -450,11 +464,11 @@ describe("attention dot", () => {
 		expect(html.match(/<span class="dot"><\/span>/g)).toHaveLength(2);
 		expect(html).toContain('aria-label="Account (needs attention)"');
 		expect(html).toContain('<span class="nav-flag">Re-link needed</span>');
-		expect(html).toContain('<span class="badge badge-alert">Needs re-link</span>');
+		expect(html).toContain('<span class="status status-alert"><span class="status-dot"></span>Needs re-login</span>');
 		// "Writes off" wins when both apply.
 		const both = await (await getWithEnv("/settings", owner.cookie, { WRITES_ENABLED: "false" })).text();
 		expect(both).toContain('<span class="nav-flag">Writes off</span>');
-		expect(both).toContain("Needs re-link: stale-acct");
+		expect(both).toContain("Needs re-login: stale-acct");
 
 		// A flag for an alias that is not linked is ignored; linking again clears the flag.
 		await markNeedsRelink(env, "ghost-acct");
@@ -480,12 +494,12 @@ describe("stale scopes", () => {
 		expect(html).toContain("no-profile");
 		expect(html).not.toContain('class="dot"');
 		expect(html).not.toContain("Re-link needed");
-		expect(html).not.toContain("Needs re-link");
+		expect(html).not.toContain("Needs re-login");
 		expect(html).not.toContain("nav-flag");
 		// The initial-letter avatar stands in for the missing picture.
 		expect(html).toContain('<span class="avatar avatar-32" aria-hidden="true">N</span>');
 		const settings = await (await get("/settings", owner.cookie)).text();
-		expect(settings).not.toContain("needing re-link");
+		expect(settings).not.toContain("needing re-login");
 		await deleteAccount(env, "no-profile");
 	});
 
@@ -507,11 +521,11 @@ describe("stale scopes", () => {
 		});
 		const owner = await signIn();
 		const html = await (await get("/link", owner.cookie)).text();
-		expect(html).toContain('<span class="badge badge-ok">Linked</span><span class="muted small">Re-link for Drive Activity</span>');
+		expect(html).toContain('<span class="status"><span class="status-dot"></span>Connected</span><span class="muted small">Re-link for Drive Activity</span>');
 		expect(html.match(/Re-link for Drive Activity/g)).toHaveLength(1);
 		expect(html).not.toContain('class="dot"');
 		expect(html).not.toContain("Re-link needed");
-		expect(html).not.toContain("Needs re-link");
+		expect(html).not.toContain("Needs re-login");
 		expect(html).not.toContain("nav-flag");
 		await deleteAccount(env, "no-activity");
 		await deleteAccount(env, "has-activity");
@@ -528,7 +542,7 @@ describe("stale scopes", () => {
 		});
 		const owner = await signIn();
 		const html = await (await get("/link", owner.cookie)).text();
-		expect(html).toContain("Needs re-link: no-freebusy");
+		expect(html).toContain("Needs re-login: no-freebusy");
 		await deleteAccount(env, "no-freebusy");
 	});
 
@@ -544,7 +558,7 @@ describe("stale scopes", () => {
 		const owner = await signIn();
 		const html = await (await get("/link", owner.cookie)).text();
 		expect(html).toContain('<span class="nav-flag">Re-link needed</span>');
-		expect(html).toContain("Needs re-link: old-scopes");
+		expect(html).toContain("Needs re-login: old-scopes");
 		const settings = await (await get("/settings", owner.cookie)).text();
 		expect(settings).toContain("DIRECT_SEND_ENABLED");
 		expect(settings).toContain("DRIVE_SHARE_ENABLED");
@@ -693,9 +707,9 @@ describe("/settings allowed AI clients", () => {
 		expect(audit).toHaveLength(1);
 		expect(audit[0].tool).toBe("allow_client_url");
 		expect(JSON.parse(audit[0].meta).redirectUri).toBe(CLAUDE);
-		const auditPage = await (await get("/audit", owner.cookie)).text();
-		expect(auditPage).toContain(`Redirect URL: ${CLAUDE}`);
-		expect(auditPage).toContain("Owner (/settings)");
+		const activity = (await (await get("/settings", owner.cookie)).text()).split('id="activity"')[1];
+		expect(activity).toContain(`Redirect URL: ${CLAUDE}`);
+		expect(activity).toContain("<td>Owner</td>");
 	});
 
 	it("rejects URLs that are not https or loopback http, wildcards, and fragments", async () => {
@@ -761,14 +775,19 @@ describe("/settings allowed AI clients", () => {
 			}),
 		});
 		expect(register.status).toBe(201);
-		const html = await (await get("/clients", owner.cookie)).text();
-		// A card per client. One unlisted URL: no brand logo (letter tile) and "Not allowed" overall.
-		expect(html).toContain("<dt>Redirect URLs</dt>");
+		let html = await (await get("/clients", owner.cookie)).text();
+		// A card per app. One unlisted URL: no brand logo (letter tile) and "Not allowed" overall.
 		expect(html).toContain('<span class="client-logo" aria-hidden="true">T</span>');
 		expect(html).not.toContain("logo-claude");
 		expect(html).toContain('<div class="card-foot"><span class="badge badge-alert">Not allowed</span>');
-		expect(html).toContain('<details class="disclose card-info">');
-		expect(html).toMatch(/<form class="push" method="post" action="\/clients\/revoke">\n<input type="hidden" name="csrf_token" value="[^"]+">\n<input type="hidden" name="client_id" value="[^"]+">\n<button class="btn-danger" type="submit">Revoke<\/button>/);
+		// Revoke is a two-step confirm that posts the group key, never a client id.
+		expect(html).toMatch(/<form method="post" action="\/clients\/revoke">\n<input type="hidden" name="csrf_token" value="[^"]+">\n<input type="hidden" name="group" value="[A-Za-z0-9_-]{16}">/);
+		expect(html).toMatch(/<button class="btn-danger-solid" type="submit" name="confirm" value="yes">Yes, revoke Two URLs<\/button>/);
+		expect(html).not.toContain('name="client_id"');
+		// The redirect URLs are in the detail view.
+		const key = html.match(/href="\/clients\?open=([A-Za-z0-9_-]{16})"/)![1];
+		html = await (await get(`/clients?open=${key}`, owner.cookie)).text();
+		expect(html).toContain("<dt>Redirect URLs</dt>");
 		expect(html).toContain(`<span class="mono small">${CLAUDE}</span> <span class="badge badge-ok">Allowed</span>`);
 		expect(html).toContain(
 			'<span class="mono small">https://unlisted.example/cb</span> <span class="badge badge-alert">Not allowed</span>',

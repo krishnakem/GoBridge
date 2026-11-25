@@ -1,22 +1,29 @@
 /**
  * Owner-only pages for reviewing and controlling access.
  *
- *   GET  /audit           recent writes and which AI client made them
- *   GET  /clients         registered AI clients and their active grants
- *   POST /clients/revoke  revoke one client's grants + registration (session + CSRF)
- *   GET  /settings        status (environment, limits, usage, re-link flags) and the
- *                         allowed AI clients list, the one thing editable here
+ *   GET  /clients         AI clients, one card per app; ?open=<group key> shows the detail view
+ *   POST /clients/revoke  remove every connection of one app          (session + CSRF + confirm)
+ *   GET  /settings        allowed AI clients (editable), status, usage by account, all activity
  *   POST /settings/allowed-clients         allow one redirect URL     (session + CSRF)
  *   POST /settings/allowed-clients/remove  remove one redirect URL    (session + CSRF)
+ *   GET  /audit           owner-only redirect to All activity on /settings
  *   POST /logout          end the owner session (session + CSRF); other methods get 405
  *   GET  /signed-out      public "Signed out" notice with a Sign in button
  *
  * Like /link: no content without an owner session, and every state-changing
  * action is POST-only with a CSRF token.
  */
-import { uiCardsMode } from "./ui/resources";
-import type { ClientInfo, GrantSummary, OAuthHelpers } from "@cloudflare/workers-oauth-provider";
+import type { OAuthHelpers } from "@cloudflare/workers-oauth-provider";
 import { Hono } from "hono";
+import { type AccountInfo, ALIAS_PATTERN } from "./accounts";
+import {
+	ACTIVITY_MAX_PAGE,
+	type ActivityFilter,
+	activityPage,
+	aliasSpans,
+	OWNER_CLIENT_ID,
+	recentWrites,
+} from "./activity";
 import {
 	addAllowedRedirect,
 	isRedirectAllowed,
@@ -26,11 +33,34 @@ import {
 	removeAllowedRedirect,
 } from "./allowed-clients";
 import {
+	type ClientDirectory,
+	type ClientGroup,
+	GROUP_KEY_PATTERN,
+	loadClientDirectory,
+	revokeGroup,
+	revokeLeftoverGrants,
+} from "./client-groups";
+import { clientLogoHtml } from "./client-logos";
+import {
+	clientCardsHtml,
+	drawerHtml,
+	errorCardHtml,
+	groupBadgesHtml,
+	groupLogoHtml,
+	loadGroupActivity,
+	loadOrNull,
+	revokeFormHtml,
+	statusHtml,
+	timeHtml,
+	usageMetersHtml,
+	writeLineHtml,
+} from "./components";
+import {
 	type AuditEntry,
 	dailySendCap,
 	DAILY_SHARE_CAP,
 	KILL_SWITCHES,
-	listAudit,
+	OWNER_RENAME_LIMIT_PER_HOUR,
 	recordAudit,
 	readRateLimit,
 	WRITE_RATE_LIMIT_PER_HOUR,
@@ -38,8 +68,15 @@ import {
 	writeUsage,
 	switchEnabled,
 } from "./guardrails";
-import { clientLogoHtml } from "./client-logos";
-import { avatarHtml, escapeHtml, ICONS, renderMessagePage, renderOwnerPage } from "./html";
+import {
+	type Attention,
+	avatarHtml,
+	escapeHtml,
+	ICONS,
+	type OwnerPath,
+	renderMessagePage,
+	renderOwnerPage,
+} from "./html";
 import { ownerStatus } from "./owner-status";
 import { requireOwnerPost } from "./link-handler";
 import {
@@ -48,8 +85,34 @@ import {
 	SESSION_TTL_SECONDS,
 	startOwnerLogin,
 } from "./session";
+import { uiCardsMode } from "./ui/resources";
 
-const app = new Hono<{ Bindings: Env & { OAUTH_PROVIDER: OAuthHelpers } }>();
+type Bindings = Env & { OAUTH_PROVIDER: OAuthHelpers };
+const app = new Hono<{ Bindings: Bindings }>();
+
+const OWNER_PATHS: readonly OwnerPath[] = ["/clients", "/settings", "/link"];
+
+// A failed load never shows a blank page or a raw error.
+app.onError((_error, c) => {
+	console.error(`${c.req.method} ${c.req.routePath} error: internal`);
+	const back = OWNER_PATHS.find((path) => c.req.routePath.startsWith(path)) ?? "/link";
+	return renderMessagePage(
+		"Something went wrong",
+		c.req.method === "GET"
+			? "GoBridge could not load this page. Nothing was changed."
+			: "GoBridge hit an error. Check the page before trying again.",
+		500,
+		undefined,
+		undefined,
+		{ href: back, label: c.req.method === "GET" ? "Retry" : "Back" },
+	);
+});
+
+/** Used when the account list itself cannot be read: the menu still renders. */
+const fallbackAttention = (env: Env): Attention => ({ relink: [], writesOff: !writesEnabled(env) });
+
+const plural = (count: number, word: string) => `${count} ${word}${count === 1 ? "" : "s"}`;
+const day = (seconds?: number) => (seconds ? new Date(seconds * 1000).toISOString().slice(0, 10) : "");
 
 function auditDetails(entry: AuditEntry): string {
 	const meta = entry.meta ?? {};
@@ -87,81 +150,34 @@ function auditDetails(entry: AuditEntry): string {
 	if (meta.externalFormulas) parts.push(`External formulas: ${meta.externalFormulas}`);
 	if (meta.newAlias) parts.push(`Renamed to: ${meta.newAlias}`);
 	if (meta.redirectUri) parts.push(`Redirect URL: ${meta.redirectUri}`);
+	if (meta.targetClient !== undefined) parts.push(`Client: ${meta.targetClient}`);
+	if (meta.clientCount !== undefined) parts.push(`Registrations removed: ${meta.clientCount}`);
+	if (meta.grantCount !== undefined) parts.push(`Connections removed: ${meta.grantCount}`);
+	if (meta.remainingCount) parts.push(`Could not remove: ${meta.remainingCount}`);
 	if (meta.resultCount !== undefined) parts.push(`Items returned: ${meta.resultCount}`);
 	return parts.map(escapeHtml).join("<br>");
 }
 
+// The old Recent writes page. Its content is now "All activity" on /settings;
+// the address still works for the owner and shows nothing to anyone else.
 app.get("/audit", async (c) => {
 	const session = await readOwnerSession(c.req.raw, c.env);
 	if (!session) return startOwnerLogin(c.req.raw, c.env, "/audit");
-
-	// A plain GET filter: reads are hidden unless asked for. Nothing changes state.
-	const showReads = c.req.query("reads") === "show";
-	const [writes, reads, { attention }] = await Promise.all([
-		listAudit(c.env, 100, "write"),
-		showReads ? listAudit(c.env, 100, "read") : Promise.resolve([]),
-		ownerStatus(c.env),
-	]);
-	const entries = [...writes, ...reads].sort((a, b) => b.ts.localeCompare(a.ts));
-	const rows = entries
-		.map(
-			(entry) => `<tr>
-<td class="muted">${escapeHtml(entry.ts.replace("T", " ").slice(0, 19))}</td>
-<td>${escapeHtml(entry.clientName || "(no name)")}<br><span class="muted mono small">${escapeHtml(entry.clientId)}</span></td>
-<td>${escapeHtml(entry.alias || "(all)")}</td>
-<td><strong>${escapeHtml(entry.tool)}</strong> <span class="badge">${entry.kind === "read" ? "read" : "write"}</span><br><span class="muted">${escapeHtml(entry.outcome === "ok" ? "done" : `failed: ${entry.outcome}`)}</span></td>
-<td>${auditDetails(entry)}</td>
-</tr>`,
-		)
-		.join("\n");
-	const table = entries.length
-		? `<div class="table-wrap"><table>
-<tr><th>Time (UTC)</th><th>AI client</th><th>Account</th><th>Action</th><th>Details</th></tr>
-${rows}
-</table></div>`
-		: `<p class="muted">Nothing recorded yet.</p>`;
-	const filter = showReads
-		? '<p>Showing writes and reads. <a href="/audit">Hide reads</a></p>'
-		: '<p>Showing writes only. <a href="/audit?reads=show">Show reads too</a></p>';
-
-	return renderOwnerPage({
-		active: "/audit",
-		attention,
-		bodyHtml: `<p class="muted">The 100 most recent write actions${showReads ? " and the 100 most recent reads" : ""}. Entries are kept for 90 days. Writes record recipients and subject or event name, never bodies. Reads record only the tool and how many items came back.</p>
-${filter}
-${table}`,
-		session,
-		title: showReads ? "Recent writes and reads" : "Recent writes",
+	return new Response(null, {
+		headers: {
+			"Cache-Control": "no-store",
+			Location: c.req.query("reads") === "show" ? "/settings?reads=show#activity" : "/settings#activity",
+		},
+		status: 302,
 	});
 });
 
-async function allClients(helpers: OAuthHelpers): Promise<ClientInfo[]> {
-	const clients: ClientInfo[] = [];
-	let cursor: string | undefined;
-	do {
-		const page = await helpers.listClients({ cursor, limit: 100 });
-		clients.push(...page.items);
-		cursor = page.cursor;
-	} while (cursor && clients.length < 500);
-	return clients;
-}
-
-async function allGrants(helpers: OAuthHelpers, userId: string): Promise<GrantSummary[]> {
-	const grants: GrantSummary[] = [];
-	let cursor: string | undefined;
-	do {
-		const page = await helpers.listUserGrants(userId, { cursor, limit: 100 });
-		grants.push(...page.items);
-		cursor = page.cursor;
-	} while (cursor && grants.length < 500);
-	return grants;
-}
-
 const NOTICES: Record<string, string> = {
+	leftover: "Leftover connection records removed.",
 	revoked: "Client revoked. Its tokens no longer work.",
 };
 
-/** One client's redirect URLs, each marked as on or off the allowed list. */
+/** One registration's redirect URLs, each marked as on or off the allowed list. */
 function redirectCell(uris: readonly string[], allowed: string[] | null): string {
 	if (!uris.length) return '<span class="muted">none</span>';
 	return uris
@@ -177,116 +193,210 @@ function redirectCell(uris: readonly string[], allowed: string[] | null): string
 		.join("\n");
 }
 
+/** The client detail view: recent writes, the underlying connections, and Revoke. */
+async function clientDrawerHtml(
+	env: Env,
+	group: ClientGroup,
+	allowed: string[] | null,
+	csrf: string,
+): Promise<string> {
+	const writes = await loadOrNull(
+		recentWrites(env, { clientIds: group.clients.map((client) => client.clientId) }, 20),
+	);
+	const writesHtml =
+		writes === null
+			? errorCardHtml("this client's recent writes", `/clients?open=${group.key}`)
+			: writes.length
+				? `<ul class="rows">
+${writes.map((entry) => `<li class="row"><div class="row-main">${writeLineHtml(entry)}</div></li>`).join("\n")}
+</ul>
+<p class="muted small">Account, action and time only. Recipients and subjects are under All activity in <a href="/settings#activity">Settings</a>.</p>`
+				: '<p class="muted">No writes in the last 90 days.</p>';
+	const connections = group.clients
+		.map((client) => {
+			const grants = group.grants.filter((grant) => grant.clientId === client.clientId);
+			return `<li><dl class="info-panel">
+<div><dt>Registered as</dt><dd>${escapeHtml(client.clientName || "(no name)")}</dd></div>
+<div><dt>Client ID</dt><dd class="mono">${escapeHtml(client.clientId)}</dd></div>
+<div><dt>Registered</dt><dd>${escapeHtml(day(client.registrationDate)) || "unknown"}</dd></div>
+<div><dt>Access</dt><dd>${grants.length ? `Connected since ${escapeHtml(day(Math.min(...grants.map((grant) => grant.createdAt))))} (${plural(grants.length, "grant")})` : "Registered, not connected"}</dd></div>
+<div><dt>Redirect URLs</dt><dd class="url-list">${redirectCell(client.redirectUris ?? [], allowed)}</dd></div>
+</dl></li>`;
+		})
+		.join("\n");
+	return drawerHtml({
+		bodyHtml: `${
+			group.unverified
+				? '<p class="warn">This app registered under a well-known name, but its redirect URLs are not that company\'s. Treat it as an unknown app.</p>'
+				: ""
+		}<section class="drawer-section">
+<h3>Recent writes</h3>
+${writesHtml}
+</section>
+<section class="drawer-section">
+<h3>${plural(group.clients.length, "connection")}</h3>
+<ul class="rows connections">
+${connections}
+</ul>
+</section>
+<section class="drawer-section">
+<h3>Revoke</h3>
+${revokeFormHtml(group, csrf)}
+</section>`,
+		closeHref: "/clients",
+		leadHtml: groupLogoHtml(group),
+		subHtml: `${groupBadgesHtml(group, allowed)} <span class="muted">${group.brand ? "Verified by its redirect URLs" : `Name chosen by the app · ${escapeHtml(group.hosts.join(", ") || "no redirect URL")}`}</span>`,
+		title: group.label,
+	});
+}
+
 app.get("/clients", async (c) => {
 	const session = await readOwnerSession(c.req.raw, c.env);
 	if (!session) return startOwnerLogin(c.req.raw, c.env, "/clients");
 
-	const [clients, grants, { attention }, allowed] = await Promise.all([
-		allClients(c.env.OAUTH_PROVIDER),
-		allGrants(c.env.OAUTH_PROVIDER, session.sub),
-		ownerStatus(c.env),
-		listAllowedRedirects(c.env).catch(() => null),
+	const [directory, status, allowed] = await Promise.all([
+		loadOrNull(loadClientDirectory(c.env.OAUTH_PROVIDER, session.sub)),
+		loadOrNull(ownerStatus(c.env)),
+		loadOrNull(listAllowedRedirects(c.env)),
 	]);
 	const csrf = escapeHtml(session.csrf);
-	const day = (seconds?: number) =>
-		seconds ? new Date(seconds * 1000).toISOString().slice(0, 10) : "";
+	const groups = directory?.groups ?? [];
+	const activity = directory ? await loadOrNull(loadGroupActivity(c.env, groups)) : null;
 
-	// Connected clients first, then the rest by registration date (newest first).
-	const active = (client: ClientInfo) => grants.filter((g) => g.clientId === client.clientId);
-	clients.sort(
-		(a, b) =>
-			Math.sign(active(b).length) - Math.sign(active(a).length) ||
-			(b.registrationDate ?? 0) - (a.registrationDate ?? 0),
-	);
+	// ?open= must be the key of a group that exists right now. Anything else
+	// shows the page with no detail view: the value is never echoed.
+	const wanted = c.req.query("open") ?? "";
+	const open = GROUP_KEY_PATTERN.test(wanted) ? groups.find((group) => group.key === wanted) : undefined;
 
-	// One card per client: logo, name, an overall Allowed / Not allowed badge and
-	// Revoke. The info button (a <details>) opens the id, dates and redirect URLs.
-	const cards = clients
-		.map((client) => {
-			const mine = active(client);
-			const uris = client.redirectUris ?? [];
-			const name = client.clientName || "(no name)";
-			const access = mine.length
-				? `Connected since ${escapeHtml(day(Math.min(...mine.map((g) => g.createdAt))))}`
-				: "Registered, not connected";
-			const ok =
-				uris.length > 0 && allowed !== null && uris.every((uri) => isRedirectAllowed(uri, allowed));
-			const badge =
-				allowed === null
-					? '<span class="badge">List unavailable</span>'
-					: ok
-						? '<span class="badge badge-ok">Allowed</span>'
-						: '<span class="badge badge-alert">Not allowed</span>';
-			return `<div class="card has-info${allowed !== null && !ok ? " card-alert" : ""}">
-<div>
-<div class="card-head">
-${clientLogoHtml(uris, name)}
-<div class="card-main">
-<div class="card-title"><strong>${escapeHtml(name)}</strong></div>
-<div class="card-sub">${access}</div>
-</div>
-</div>
-<details class="disclose card-info">
-<summary class="icon-btn" aria-label="Details for ${escapeHtml(name)}" title="Details">${ICONS.info}</summary>
-<dl class="info-panel">
-<div><dt>Client ID</dt><dd class="mono">${escapeHtml(client.clientId)}</dd></div>
-<div><dt>Registered</dt><dd>${escapeHtml(day(client.registrationDate)) || "unknown"}</dd></div>
-<div><dt>Access</dt><dd>${mine.length ? `${mine.length} grant${mine.length === 1 ? "" : "s"}` : "No grants"}</dd></div>
-<div><dt>Redirect URLs</dt><dd class="url-list">${redirectCell(uris, allowed)}</dd></div>
-</dl>
-</details>
-</div>
-<div class="card-foot">${badge}
-<form class="push" method="post" action="/clients/revoke">
+	const leftover = directory?.leftoverGrants.length
+		? `<div class="warn"><p>${plural(directory.leftoverGrants.length, "connection record")} left behind by an earlier revoke. Their tokens no longer work; this only tidies up.</p>
+<form method="post" action="/clients/revoke">
 <input type="hidden" name="csrf_token" value="${csrf}">
-<input type="hidden" name="client_id" value="${escapeHtml(client.clientId)}">
-<button class="btn-danger" type="submit">Revoke</button>
-</form>
-</div>
-</div>`;
-		})
-		.join("\n");
-	const table = clients.length
-		? `<div class="cards">
-${cards}
-</div>`
-		: `<p class="muted">No AI clients have registered yet.</p>`;
-
+<input type="hidden" name="group" value="leftover">
+<button type="submit" name="confirm" value="yes">Remove leftover records</button>
+</form></div>`
+		: "";
 	const notice = NOTICES[c.req.query("msg") ?? ""];
 	return renderOwnerPage({
 		active: "/clients",
-		attention,
-		bodyHtml: `${notice ? `<p class="notice">${escapeHtml(notice)}</p>` : ""}
-<p class="muted">Every app that has registered with GoBridge. Names are chosen by the app itself, so judge an app by its redirect URLs (the info button on each card): it can connect only when all of them are on the allowed list in Settings. Revoking a client cancels its tokens and removes its registration; other clients keep working. To use it again, add GoBridge in that app again.</p>
-${table}`,
+		attention: status?.attention ?? fallbackAttention(c.env),
+		bodyHtml: `${notice ? `<p class="notice">${escapeHtml(notice)}</p>` : ""}${leftover}
+<p class="muted">One card per app. An app that was added more than once shows as one card with several connections. A name is chosen by the app itself, so only apps whose redirect URLs prove who they are get a logo; an app can connect only when all its redirect URLs are on the allowed list in <a href="/settings">Settings</a>.</p>
+${
+	directory
+		? clientCardsHtml(groups, { activity, allowed, csrf: session.csrf })
+		: `<div class="cards">
+${errorCardHtml("your AI clients", "/clients")}
+</div>`
+}`,
+		overlayHtml: open ? await clientDrawerHtml(c.env, open, allowed, session.csrf) : undefined,
 		session,
 		title: "AI clients",
 	});
 });
 
+/** Records a revoke. A failed audit write never blocks or undoes the revoke. */
+async function auditRevoke(
+	env: Env,
+	route: string,
+	entry: { label: string; ok: boolean; clientCount: number; grantCount: number; remainingCount: number },
+) {
+	try {
+		await recordAudit(env, {
+			alias: "",
+			clientId: "owner",
+			clientName: "Owner (/clients)",
+			meta: {
+				clientCount: entry.clientCount,
+				grantCount: entry.grantCount,
+				remainingCount: entry.remainingCount,
+				targetClient: entry.label,
+			},
+			outcome: entry.ok ? "ok" : "partial",
+			tool: "revoke_client",
+		});
+	} catch (_e) {
+		console.error(`${route} error: audit_failed`);
+	}
+}
+
+// Revoking reduces access, so it is never rate limited and never waits on a
+// counter: owner session, CSRF, POST and the confirm step are its only gates.
+// The form names a group key; the server works out the registrations and
+// grants itself, from the signed-in owner's own grants.
 app.post("/clients/revoke", async (c) => {
 	const route = "POST /clients/revoke";
 	const gate = await requireOwnerPost(c as any, route);
 	if (gate instanceof Response) return gate;
+	const fail = (message: string, status: 400 | 404 | 500 | 503, category: string) => {
+		console.warn(`${route} denied: ${category}`);
+		return renderMessagePage("Could not continue", message, status, undefined, "/clients");
+	};
+	const key = gate.form.get("group");
+	const confirmed = gate.form.get("confirm") === "yes";
 
-	const clientId = gate.form.get("client_id");
-	const client =
-		typeof clientId === "string" && clientId.length <= 512
-			? await c.env.OAUTH_PROVIDER.lookupClient(clientId)
-			: null;
-	if (!client) {
-		console.warn(`${route} denied: unknown_client`);
-		return renderMessagePage("Could not continue", "No registered client has that id.", 404);
+	if (key === "leftover") {
+		if (!confirmed) return fail("That needs to be confirmed. Nothing was changed.", 400, "not_confirmed");
+		const swept = await revokeLeftoverGrants(c.env.OAUTH_PROVIDER, gate.session.sub);
+		await auditRevoke(c.env, route, {
+			clientCount: 0,
+			grantCount: swept.removed,
+			label: "(leftover records)",
+			ok: swept.remaining === 0,
+			remainingCount: swept.remaining,
+		});
+		if (swept.remaining) {
+			return fail(
+				`${plural(swept.remaining, "leftover record")} could not be removed. Their tokens do not work. It is safe to try again.`,
+				500,
+				"partial",
+			);
+		}
+		console.log(`${route} ok: leftover grants=${swept.removed}`);
+		return c.redirect("/clients?msg=leftover", 303);
 	}
 
-	// Only this client's grants: every other client's tokens stay valid.
-	const grants = await allGrants(c.env.OAUTH_PROVIDER, gate.session.sub);
-	for (const grant of grants.filter((g) => g.clientId === client.clientId)) {
-		await c.env.OAUTH_PROVIDER.revokeGrant(grant.id, gate.session.sub);
+	let directory: ClientDirectory;
+	try {
+		directory = await loadClientDirectory(c.env.OAUTH_PROVIDER, gate.session.sub);
+	} catch (_e) {
+		return fail(
+			"GoBridge could not read its list of AI clients, so nothing was revoked. Try again now. To cut every app off at once, remove its redirect URL under Allowed AI clients in Settings.",
+			503,
+			"clients_unavailable",
+		);
 	}
-	await c.env.OAUTH_PROVIDER.deleteClient(client.clientId);
+	const group =
+		typeof key === "string" && GROUP_KEY_PATTERN.test(key)
+			? directory.groups.find((candidate) => candidate.key === key)
+			: undefined;
+	if (!group) return fail("No AI client matches that request. It may already be revoked.", 404, "unknown_client");
+	if (!confirmed) return fail("Revoking needs to be confirmed. Nothing was changed.", 400, "not_confirmed");
 
-	console.log(`${route} ok: client=${client.clientId}`);
+	const result = await revokeGroup(c.env.OAUTH_PROVIDER, gate.session.sub, group);
+	const remaining = result.remainingGrants + result.remainingClients;
+	await auditRevoke(c.env, route, {
+		clientCount: result.clientCount,
+		grantCount: result.grantCount,
+		label: group.label,
+		ok: remaining === 0,
+		remainingCount: remaining,
+	});
+	if (remaining) {
+		const parts = [
+			result.remainingClients ? `${plural(result.remainingClients, "registration")} could not be removed and may still work` : "",
+			result.remainingGrants
+				? `${plural(result.remainingGrants, "connection record")} could not be removed${result.remainingClients ? "" : " (their tokens no longer work, because the registration is gone)"}`
+				: "",
+		].filter(Boolean);
+		return fail(
+			`Revoke did not finish: ${parts.join("; ")}. Removed so far: ${plural(result.clientCount, "registration")} and ${plural(result.grantCount, "connection")}. Go back and revoke again; it is safe to retry.`,
+			500,
+			"partial",
+		);
+	}
+
+	console.log(`${route} ok: clients=${result.clientCount} grants=${result.grantCount}`);
 	return c.redirect("/clients?msg=revoked", 303);
 });
 
@@ -317,27 +427,15 @@ function hostOf(uri: string): string {
 	}
 }
 
-/** One usage meter: "3 of 25" over a bar filled in tenths (classes, since inline styles are not allowed). */
-export function meterHtml(label: string, used: number | undefined, limit: number): string {
-	if (used === undefined) {
-		return `<div><span class="meter-top"><span>${label}</span><span>unavailable</span></span><span class="meter-track"><span class="meter-fill meter-0"></span></span></div>`;
-	}
-	const ratio = limit > 0 ? used / limit : 1;
-	const tenths = Math.min(10, Math.max(used > 0 ? 1 : 0, Math.round(ratio * 10)));
-	return `<div${ratio >= 0.9 ? ' class="meter-high"' : ""}><span class="meter-top"><span>${label}</span><span>${used} of ${limit}</span></span><span class="meter-track"><span class="meter-fill meter-${tenths}"></span></span></div>`;
-}
-
-/** The allowed AI clients section of /settings: the list, Remove buttons and the add form. */
-function allowedClientsSection(allowed: string[] | null, csrf: string): string {
+/** The redirect-URL editor: the allowed list (which decides who may connect), Remove and the add form. */
+function allowedUrlsHtml(allowed: string[] | null, csrf: string): string {
 	const list =
 		allowed === null
-			? '<p class="warn">The allowed list could not be read just now, so every AI client is being refused. Reload the page to try again.</p>'
+			? '<p class="warn">The allowed list could not be read just now, so every AI client is being refused. <a href="/settings">Retry</a></p>'
 			: allowed.length
 				? ""
 				: '<p class="warn">The list is empty, so no AI client can connect. Add the redirect URL of each app you use.</p>';
-	return `<h2>Allowed AI clients</h2>
-<p class="muted">An AI app can sign in and use GoBridge only when every redirect URL it registered is on this list. Removing a URL cuts off the apps that use it at once. When an app that is not allowed tries to connect, GoBridge shows you the exact URL to add.</p>
-${list}
+	return `${list}
 <div class="cards">
 ${(allowed ?? [])
 	.map((uri) => {
@@ -358,7 +456,7 @@ ${clientLogoHtml([uri], hostOf(uri))}
 </div>`;
 	})
 	.join("\n")}
-<div class="card card-add">
+<div class="card card-form">
 <div class="card-title"><strong><label for="redirect_uri">Allow a redirect URL</label></strong></div>
 <form class="field" method="post" action="/settings/allowed-clients">
 <input type="hidden" name="csrf_token" value="${csrf}">
@@ -367,27 +465,161 @@ ${clientLogoHtml([uri], hostOf(uri))}
 </form>
 </div>
 </div>
-<p class="muted small">Exact URLs only, no wildcards. Loopback URLs (<code>localhost</code>, <code>127.0.0.1</code>) match on any port, for apps such as Claude Code. The AI clients page shows the redirect URLs each registered app uses. At most ${MAX_ALLOWED_REDIRECTS} URLs.</p>`;
+<p class="muted small">Exact URLs only, no wildcards. Loopback URLs (<code>localhost</code>, <code>127.0.0.1</code>) match on any port, for apps such as Claude Code. At most ${MAX_ALLOWED_REDIRECTS} URLs.</p>`;
 }
 
-// Status, read-only except for the allowed AI clients list. Limits and switches
-// change only through wrangler config and a deploy.
+/** What the All activity filters accept, after validation. Unknown values are dropped, never echoed. */
+type ActivityQuery = { group?: ClientGroup; owner: boolean; account?: string; reads: boolean; page: number };
+
+function activityHref(query: ActivityQuery, page: number): string {
+	const params = new URLSearchParams();
+	if (query.group) params.set("client", query.group.key);
+	else if (query.owner) params.set("client", "owner");
+	if (query.account) params.set("account", query.account);
+	if (query.reads) params.set("reads", "show");
+	if (page > 1) params.set("page", String(page));
+	const search = params.toString();
+	return `/settings${search ? `?${search}` : ""}#activity`;
+}
+
+/**
+ * All activity: every write across all clients and accounts, newest first,
+ * filterable by client and by account, 50 to a page. Rows show time, client,
+ * account and action; recipients, subjects and ids sit behind a per-row
+ * expand. Bodies and file content are never stored, so they cannot appear.
+ */
+async function activitySectionHtml(
+	env: Env,
+	query: ActivityQuery,
+	groups: readonly ClientGroup[] | null,
+	accounts: readonly AccountInfo[],
+): Promise<string> {
+	const filter: ActivityFilter = {};
+	if (query.group) filter.clientIds = query.group.clients.map((client) => client.clientId);
+	else if (query.owner) filter.clientIds = [OWNER_CLIENT_ID];
+	let former: string[] = [];
+	let result: Awaited<ReturnType<typeof activityPage>> | null = null;
+	try {
+		if (query.account) {
+			filter.spans = await aliasSpans(env, query.account);
+			former = filter.spans.slice(1).map((span) => span.alias);
+		}
+		result = await activityPage(env, { ...filter, page: query.page, reads: query.reads });
+	} catch (_e) {
+		result = null;
+	}
+
+	const groupOf = new Map<string, ClientGroup>();
+	for (const group of groups ?? []) {
+		for (const client of group.clients) groupOf.set(client.clientId, group);
+	}
+	const optionLabel = (group: ClientGroup) =>
+		group.brand ? group.label : `${group.label} (${group.hosts.join(", ") || "no redirect URL"})`;
+	const form = `<form class="filters" method="get" action="/settings#activity">
+<label>AI client
+<select name="client">
+<option value="">All clients</option>
+${(groups ?? []).map((group) => `<option value="${escapeHtml(group.key)}"${query.group?.key === group.key ? " selected" : ""}>${escapeHtml(optionLabel(group))}</option>`).join("\n")}
+<option value="owner"${query.owner ? " selected" : ""}>Owner actions</option>
+</select></label>
+<label>Account
+<select name="account">
+<option value="">All accounts</option>
+${accounts.map((account) => `<option value="${escapeHtml(account.alias)}"${query.account === account.alias ? " selected" : ""}>${escapeHtml(account.alias)}</option>`).join("\n")}
+</select></label>
+<label class="check"><input type="checkbox" name="reads" value="show"${query.reads ? " checked" : ""}> Show reads too</label>
+<button type="submit">Apply</button>
+${query.group || query.owner || query.account || query.reads || query.page > 1 ? '<a href="/settings#activity">Clear</a>' : ""}
+</form>`;
+
+	if (!result) {
+		return `${form}
+${errorCardHtml("the activity log", activityHref(query, query.page))}`;
+	}
+	const clientCell = (entry: AuditEntry) => {
+		if (entry.clientId === OWNER_CLIENT_ID) return "Owner";
+		const group = groupOf.get(entry.clientId);
+		if (group) {
+			return `${escapeHtml(group.label)}${group.unverified ? ' <span class="badge badge-alert">Unverified</span>' : ""}`;
+		}
+		return `${escapeHtml(entry.clientName || "(no name)")}${groups ? '<br><span class="muted small">No longer registered</span>' : ""}`;
+	};
+	const rows = result.entries
+		.map((entry) => {
+			const details = auditDetails(entry);
+			return `<tr>
+<td class="muted nowrap">${timeHtml(entry.ts)}</td>
+<td>${clientCell(entry)}</td>
+<td>${escapeHtml(entry.alias || "(all)")}</td>
+<td><strong>${escapeHtml(entry.tool)}</strong> <span class="badge">${entry.kind === "read" ? "read" : "write"}</span>${entry.outcome === "ok" ? "" : `<br><span class="muted">${escapeHtml(`failed: ${entry.outcome}`)}</span>`}</td>
+<td>${details ? `<details class="row-details"><summary>Details</summary><div class="small">${details}</div></details>` : ""}</td>
+</tr>`;
+		})
+		.join("\n");
+	const pager =
+		query.page > 1 || result.hasNext
+			? `<nav class="pager" aria-label="Activity pages">
+${query.page > 1 ? `<a class="btn" href="${escapeHtml(activityHref(query, query.page - 1))}">Newer</a>` : "<span></span>"}
+<span class="muted small">Page ${query.page}</span>
+${result.hasNext ? `<a class="btn" href="${escapeHtml(activityHref(query, query.page + 1))}">Older</a>` : "<span></span>"}
+</nav>`
+			: "";
+	return `${form}
+${former.length ? `<p class="muted small">Includes activity from when this account was called ${former.map((name) => `<strong>${escapeHtml(name)}</strong>`).join(", ")}.</p>` : ""}
+${
+	result.entries.length
+		? `<div class="table-wrap"><table>
+<tr><th>Time</th><th>AI client</th><th>Account</th><th>Action</th><th></th></tr>
+${rows}
+</table></div>`
+		: '<p class="muted">Nothing recorded for this view.</p>'
+}
+${pager}`;
+}
+
+// Status is read-only; the allowed redirect URLs are the one editable setting.
+// Limits and switches change only through wrangler config and a deploy.
 app.get("/settings", async (c) => {
 	const session = await readOwnerSession(c.req.raw, c.env);
 	if (!session) return startOwnerLogin(c.req.raw, c.env, "/settings");
 
-	const { accounts, attention } = await ownerStatus(c.env);
-	const usage = await Promise.all(accounts.map((account) => writeUsage(c.env, account.alias)));
+	const [status, directory, allowed] = await Promise.all([
+		loadOrNull(ownerStatus(c.env)),
+		loadOrNull(loadClientDirectory(c.env.OAUTH_PROVIDER, session.sub)),
+		loadOrNull(listAllowedRedirects(c.env)),
+	]);
+	const accounts = status?.accounts ?? [];
+	const attention = status?.attention ?? fallbackAttention(c.env);
+	const groups = directory?.groups ?? null;
+	const [usage, activity] = await Promise.all([
+		Promise.all(accounts.map((account) => writeUsage(c.env, account.alias))),
+		groups ? loadOrNull(loadGroupActivity(c.env, groups)) : null,
+	]);
 	const cap = dailySendCap(c.env);
 	const enabled = writesEnabled(c.env);
-	const allowed = await listAllowedRedirects(c.env).catch(() => null);
 	const csrf = escapeHtml(session.csrf);
 	const notice = SETTINGS_NOTICES[c.req.query("msg") ?? ""];
 
-	const cards = accounts
+	// Filters: each value must be one GoBridge already knows. Anything else is ignored.
+	const clientParam = c.req.query("client") ?? "";
+	const accountParam = c.req.query("account") ?? "";
+	const pageParam = c.req.query("page") ?? "";
+	const query: ActivityQuery = {
+		account:
+			ALIAS_PATTERN.test(accountParam) && accounts.some((account) => account.alias === accountParam)
+				? accountParam
+				: undefined,
+		group: GROUP_KEY_PATTERN.test(clientParam)
+			? groups?.find((group) => group.key === clientParam)
+			: undefined,
+		owner: clientParam === "owner",
+		page: /^[1-9][0-9]{0,2}$/.test(pageParam) ? Math.min(Number(pageParam), ACTIVITY_MAX_PAGE) : 1,
+		reads: c.req.query("reads") === "show",
+	};
+
+	const usageCards = accounts
 		.map((account, i) => {
 			const relink = attention.relink.includes(account.alias);
-			const used = usage[i];
 			return `<div class="card${relink ? " card-alert" : ""}">
 <div class="card-head">
 ${avatarHtml(account.email, 32, account.picture)}
@@ -395,22 +627,21 @@ ${avatarHtml(account.email, 32, account.picture)}
 <div class="card-title"><strong>${escapeHtml(account.alias)}</strong></div>
 <div class="card-sub">${escapeHtml(account.email)}</div>
 </div>
-${relink ? '<span class="badge badge-alert">Needs re-link</span>' : '<span class="badge badge-ok">Linked</span>'}
+${statusHtml(relink)}
 </div>
-<div class="meters">
-${meterHtml("Emails sent today (UTC)", used?.sendsToday, cap)}
-${meterHtml("Writes this hour", used?.writesThisHour, WRITE_RATE_LIMIT_PER_HOUR)}
-${meterHtml("Reads this hour", used?.readsThisHour, readRateLimit(c.env))}
-${meterHtml("Files shared today", used?.sharesToday, DAILY_SHARE_CAP)}
-</div>
+${usageMetersHtml(c.env, usage[i])}
 </div>`;
 		})
 		.join("\n");
-	const table = accounts.length
+	const usageSection = !status
 		? `<div class="cards">
-${cards}
+${errorCardHtml("your linked accounts", "/settings")}
 </div>`
-		: `<p class="muted">No accounts linked yet.</p>`;
+		: accounts.length
+			? `<div class="cards">
+${usageCards}
+</div>`
+			: '<p class="muted">No accounts linked yet. Link one on the <a href="/link">Linked accounts</a> page.</p>';
 
 	const switchRows = KILL_SWITCHES.map((name) => {
 		const on = switchEnabled(c.env, name);
@@ -431,7 +662,7 @@ ${cards}
 			? `<p class="warn">Switched off: ${escapeHtml(attention.switchesOff.join(", "))}. Those tools answer "switched off by the owner" until the variable is set back to "true" and deployed.</p>`
 			: "",
 		attention.relink.length
-			? `<p class="warn">Needs re-link: ${escapeHtml(attention.relink.join(", "))}. Fix this on the <a href="/link">Linked accounts</a> page.</p>`
+			? `<p class="warn">Needs re-login: ${escapeHtml(attention.relink.join(", "))}. Fix this on the <a href="/link">Linked accounts</a> page.</p>`
 			: "",
 	].join("");
 
@@ -439,7 +670,20 @@ ${cards}
 		active: "/settings",
 		attention,
 		bodyHtml: `${notice ? `<p class="notice">${escapeHtml(notice)}</p>` : ""}${warnings}
-${allowedClientsSection(allowed, csrf)}
+<section class="panel">
+<h2>Allowed AI clients</h2>
+<p class="muted">An AI app can sign in and use GoBridge only when every redirect URL it registered is on this list. Removing a URL cuts off the apps that use it at once. When an app that is not allowed tries to connect, GoBridge shows you the exact URL to add.</p>
+${allowedUrlsHtml(allowed, csrf)}
+<h3>Apps that have registered</h3>
+${
+	groups
+		? clientCardsHtml(groups, { activity, allowed, csrf: session.csrf })
+		: `<div class="cards">
+${errorCardHtml("your AI clients", "/settings")}
+</div>`
+}
+</section>
+<section class="panel">
 <h2>Status</h2>
 <p class="muted">Read-only. To change a limit or switch, edit <code>wrangler.jsonc</code> and deploy.</p>
 <dl class="facts">
@@ -450,11 +694,20 @@ ${switchRows}
 <dt>Daily share cap</dt><dd>${DAILY_SHARE_CAP} share_file calls per account per day</dd>
 <dt>Write rate limit</dt><dd>${WRITE_RATE_LIMIT_PER_HOUR} write actions per account per hour</dd>
 <dt>Read rate limit</dt><dd>${readRateLimit(c.env)} read actions per account per hour</dd>
+<dt>Rename limit</dt><dd>${OWNER_RENAME_LIMIT_PER_HOUR} account renames per hour on these pages</dd>
 <dt>Owner session lifetime</dt><dd>${SESSION_TTL_SECONDS / 3600} hours, then you sign in again</dd>
-<dt>Linked accounts</dt><dd>${accounts.length}${attention.relink.length ? `, ${attention.relink.length} needing re-link` : ""}</dd>
+<dt>Linked accounts</dt><dd>${status ? `${accounts.length}${attention.relink.length ? `, ${attention.relink.length} needing re-login` : ""}` : "unavailable"}</dd>
 </dl>
+</section>
+<section class="panel">
 <h2>Usage by account</h2>
-${table}`,
+${usageSection}
+</section>
+<section class="panel" id="activity">
+<h2>All activity</h2>
+<p class="muted">Every write by every AI client on every account, newest first, kept for 90 days. Writes record recipients and subject or event name, never bodies. Reads record only the tool and how many items came back.</p>
+${await activitySectionHtml(c.env, query, groups, accounts)}
+</section>`,
 		session,
 		title: "Settings",
 	});

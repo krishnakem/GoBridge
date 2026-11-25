@@ -5,7 +5,8 @@
  *
  *   GET /static/app.css        layout and components for every page
  *   GET /static/menu.js        keyboard + click behaviour for the account menu,
- *                              and the profile-picture fallback
+ *                              the detail drawer and inline rename, and the
+ *                              profile-picture fallback
  *   GET /static/logo.svg       the GoBridge logo (MCP connector icon, page brand)
  *   GET /static/logo-256.png   the logo at 256x256 (MCP connector icon)
  *   GET /static/logo-512.png   the logo at 512x512 (MCP connector icon)
@@ -29,11 +30,13 @@ import logoSvg from "../assets/logo/logo.svg";
 
 export const APP_CSS = `*,*::before,*::after{box-sizing:border-box}
 html{-webkit-text-size-adjust:100%}
+[hidden]{display:none!important}
 body{margin:0;background:#fff;color:#18181b;font-family:system-ui,-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,"Helvetica Neue",Arial,sans-serif;font-size:14px;line-height:1.5;-webkit-font-smoothing:antialiased;-moz-osx-font-smoothing:grayscale}
 code,.mono{font-family:ui-monospace,SFMono-Regular,"SF Mono",Menlo,Consolas,monospace;font-size:.92em}
 a{color:#0369a1}
 h1{font-size:20px;font-weight:600;letter-spacing:-.01em;margin:0 0 16px}
 h2{font-size:15px;font-weight:600;margin:32px 0 8px}
+h3{font-size:13px;font-weight:600;color:#3f3f46;margin:20px 0 10px}
 p{margin:0 0 12px}
 .muted{color:#71717a}
 .small{font-size:13px}
@@ -47,7 +50,7 @@ p{margin:0 0 12px}
 .main-col{flex:1;min-width:0;display:flex;flex-direction:column}
 .topbar{position:sticky;top:0;z-index:20;display:flex;align-items:center;justify-content:space-between;height:52px;padding:0 4px 0 16px;background:#fff;border-bottom:1px solid #e4e4e7}
 .content{width:100%;max-width:960px;padding:20px 16px calc(80px + env(safe-area-inset-bottom))}
-.tabbar{position:fixed;left:0;right:0;bottom:0;z-index:10;display:grid;grid-template-columns:repeat(4,1fr);background:#fff;border-top:1px solid #e4e4e7;padding-bottom:env(safe-area-inset-bottom)}
+.tabbar{position:fixed;left:0;right:0;bottom:0;z-index:10;display:grid;grid-template-columns:repeat(3,1fr);background:#fff;border-top:1px solid #e4e4e7;padding-bottom:env(safe-area-inset-bottom)}
 .tabbar a{display:flex;flex-direction:column;align-items:center;justify-content:center;gap:2px;height:56px;font-size:11px;color:#71717a;text-decoration:none}
 .tabbar a[aria-current=page]{color:#0369a1;font-weight:500}
 
@@ -96,10 +99,12 @@ td:last-child,th:last-child{padding-right:0}
 .badge-alert{background:#fff;color:#b91c1c;box-shadow:inset 0 0 0 1px #dc2626}
 .btn,button{display:inline-flex;align-items:center;justify-content:center;height:32px;padding:0 12px;border:1px solid #e4e4e7;border-radius:6px;background:#fff;color:#27272a;font:inherit;font-size:14px;font-weight:500;text-decoration:none;cursor:pointer}
 .btn:hover,button:hover{background:#fafafa}
-.btn:focus-visible,button:focus-visible,input:focus-visible,a:focus-visible{outline:2px solid #0284c7;outline-offset:2px}
+.btn:focus-visible,button:focus-visible,input:focus-visible,select:focus-visible,summary:focus-visible,a:focus-visible{outline:2px solid #0284c7;outline-offset:2px}
 .btn-primary{background:#0284c7;border-color:#0284c7;color:#fff}
 .btn-primary:hover{background:#0369a1;border-color:#0369a1}
 .btn-danger{color:#b91c1c}
+.btn-danger-solid{background:#dc2626;border-color:#dc2626;color:#fff}
+.btn-danger-solid:hover{background:#b91c1c;border-color:#b91c1c}
 form.inline{display:inline}
 form.inline input[type=text]{width:8rem;margin-right:4px}
 .account-cell{display:inline-flex;align-items:center;gap:8px;max-width:100%}
@@ -107,6 +112,12 @@ form.inline input[type=text]{width:8rem;margin-right:4px}
 .field{display:flex;flex-wrap:wrap;align-items:center;gap:8px;margin:0 0 12px}
 input[type=text],input[type=url]{height:32px;width:14rem;max-width:100%;padding:0 10px;border:1px solid #e4e4e7;border-radius:6px;font:inherit;color:#18181b}
 input[type=url]{width:28rem}
+select{height:32px;max-width:100%;padding:0 8px;border:1px solid #e4e4e7;border-radius:6px;background:#fff;font:inherit;color:#18181b}
+label{font-size:13px;color:#52525b}
+.check{display:flex;align-items:flex-start;gap:8px;font-size:13px;color:#27272a}
+.check input{margin-top:3px}
+.stack{display:grid;gap:8px;justify-items:start}
+.nowrap{white-space:nowrap}
 .facts{display:grid;grid-template-columns:1fr;gap:2px 24px;margin:0 0 12px}
 .facts dt{color:#71717a;font-size:13px;margin-top:10px}
 .facts dd{margin:0}
@@ -116,8 +127,27 @@ input[type=url]{width:28rem}
 .card{position:relative;display:flex;flex-direction:column;gap:12px;min-width:0;padding:16px;border:1px solid #e4e4e7;border-radius:10px;background:#fff}
 .card form{margin:0}
 .card-alert{border-color:#fca5a5}
+.card-empty{background:#fafafa}
+.card p{margin:0}
+/* A card whose title link covers the whole card; its own controls stay clickable above it */
+.card-click{transition:border-color .1s}
+.card-click:hover{border-color:#a1a1aa}
+.card-link{color:inherit;text-decoration:none}
+.card-link::after{content:"";position:absolute;inset:0;border-radius:10px}
+.card-link:focus-visible{outline:none}
+.card-link:focus-visible::after{outline:2px solid #0284c7;outline-offset:2px}
+.card-click .icon-btn,.card-click form,.card-click details,.card-click time{position:relative;z-index:1}
+/* The "+" card: a <details> whose summary is the whole card until it is opened */
 .card-add{border-style:dashed}
-.card-add p{margin:0}
+.card-add>summary{display:flex;flex-direction:column;align-items:center;justify-content:center;gap:6px;min-height:76px;border-radius:6px;color:#52525b;font-weight:500;cursor:pointer}
+.card-add>summary:hover{color:#18181b}
+.card-add[open]>summary{flex-direction:row;justify-content:flex-start;min-height:0;padding:4px 6px}
+.plus .icon{width:28px;height:28px}
+.card-add[open] .plus .icon{width:18px;height:18px}
+.status{display:inline-flex;align-items:center;gap:6px;font-size:12px;color:#52525b;white-space:nowrap}
+.status-dot{width:8px;height:8px;flex:none;border-radius:9999px;background:#16a34a}
+.status-alert{color:#b91c1c}
+.status-alert .status-dot{background:#dc2626}
 .card-head{display:flex;align-items:flex-start;gap:10px;min-width:0}
 .has-info .card-head{padding-right:30px}
 .card-main{flex:1;min-width:0}
@@ -137,13 +167,45 @@ input[type=url]{width:28rem}
 .disclose>summary{list-style:none;-webkit-user-select:none;user-select:none}
 .disclose>summary::-webkit-details-marker{display:none}
 .disclose[open]>summary{background:#f4f4f5;color:#18181b}
-/* Shown when the card is hovered or focused; always shown where there is no hover */
+/* The rename pencil: shown when the alias is hovered or focused; always shown where there is no hover */
 .reveal{opacity:0;transition:opacity .1s}
-.card:hover .reveal,.card:focus-within .reveal,.disclose[open]>.reveal{opacity:1}
+.card-title:hover .reveal,.card-title:focus-within .reveal{opacity:1}
 @media (hover:none){.reveal{opacity:1}}
-.rename[open]{flex-basis:100%}
-.rename form{display:flex;gap:6px;margin-top:6px}
-.card-info>summary{position:absolute;top:12px;right:12px}
+.rename-view{display:inline-flex;align-items:center;gap:4px;min-width:0}
+.rename-inline{display:grid;gap:8px;width:100%}
+.rename-confirm{display:grid;gap:8px}
+.actions{display:flex;flex-wrap:wrap;gap:6px}
+/* Two-step confirm: a <details> whose summary looks like a button */
+.confirm>summary{display:inline-flex;cursor:pointer}
+.confirm>summary.btn-danger{color:#b91c1c}
+.confirm form{display:grid;gap:8px;justify-items:start;margin-top:8px;padding:10px;border:1px solid #fca5a5;border-radius:8px;background:#fff}
+.card-foot .confirm[open]{flex-basis:100%}
+.card-foot .push:has(.confirm[open]){flex-basis:100%;margin-left:0}
+.row-details>summary{cursor:pointer;color:#0369a1;font-size:13px}
+.row-details>div{margin-top:4px;overflow-wrap:anywhere}
+/* Settings sections */
+.panel{margin:0 0 16px;padding:16px;border:1px solid #e4e4e7;border-radius:10px}
+.panel>h2{margin:0 0 8px}
+.filters{display:flex;flex-wrap:wrap;align-items:flex-end;gap:8px 12px;margin:0 0 12px}
+.filters label{display:grid;gap:2px}
+.filters .check{display:flex;align-items:center;height:32px}
+.filters .check input{margin:0}
+.pager{display:flex;align-items:center;justify-content:space-between;gap:8px;margin-top:12px}
+/* Detail view: a full-screen sheet on phones, a side drawer from 768px */
+.drawer-backdrop{position:fixed;inset:0;z-index:50;background:rgba(24,24,27,.35)}
+.drawer{position:fixed;inset:0;z-index:60;overflow-y:auto;overscroll-behavior:contain;padding:16px 16px max(24px,env(safe-area-inset-bottom));background:#fff}
+.drawer:focus{outline:none}
+.drawer-head{display:flex;align-items:flex-start;gap:12px;padding-bottom:16px}
+.drawer-head h2{margin:0;font-size:17px;overflow-wrap:anywhere}
+.drawer-head .icon-btn{width:36px;height:36px}
+.drawer-section{padding:16px 0;border-top:1px solid #f4f4f5}
+.drawer-section h3{margin:0 0 10px}
+.drawer-section form{margin:0}
+.rows{display:grid;gap:12px;margin:0;padding:0;list-style:none}
+.row{display:flex;align-items:center;gap:10px;min-width:0}
+.row-main{flex:1;min-width:0;overflow-wrap:anywhere}
+.rows+p{margin:12px 0 0}
+.connections .info-panel{margin:0;padding:12px;border:1px solid #f4f4f5;border-radius:8px}
 .info-panel{display:grid;gap:8px;margin:12px 0 0;padding-top:12px;border-top:1px solid #f4f4f5;font-size:13px}
 .info-panel dt{color:#71717a;font-size:12px}
 .info-panel dd{margin:0;overflow-wrap:anywhere}
@@ -174,6 +236,7 @@ input[type=url]{width:28rem}
 .side-account{margin-top:auto;padding:8px 8px 12px}
 .topbar,.tabbar,.menu-backdrop{display:none}
 .content{padding:32px 40px 48px}
+.drawer{left:auto;width:440px;max-width:100%;padding:24px;border-left:1px solid #e4e4e7;box-shadow:-12px 0 32px rgba(0,0,0,.08)}
 .menu{position:absolute;left:0;right:auto;bottom:100%;width:256px;margin-bottom:4px;padding:4px 0;border:1px solid #e4e4e7;border-radius:8px;box-shadow:0 10px 15px -3px rgba(0,0,0,.1),0 4px 6px -4px rgba(0,0,0,.1)}
 .menu-header{padding:8px 12px}
 .menu-item{height:36px;padding:0 12px;font-size:14px}
@@ -198,6 +261,93 @@ export const MENU_JS = `(function () {
 		img.addEventListener("error", failed);
 		// Already finished (before this script ran) without any pixels: broken.
 		if (img.complete && img.naturalWidth === 0) failed();
+	});
+
+	// Detail view (drawer / sheet): the server renders it and makes the page
+	// behind it inert. Here: move focus in, and close on Escape by following
+	// the Close link (a fixed same-page address).
+	var drawer = document.querySelector("[data-drawer]");
+	if (drawer) {
+		var closeLink = drawer.querySelector("a[data-drawer-close]");
+		var target = window.location.hash ? document.getElementById(window.location.hash.slice(1)) : null;
+		var field = target && drawer.contains(target) ? target.querySelector("input[type=text]") : null;
+		(field || drawer).focus();
+		document.addEventListener("keydown", function (event) {
+			if (event.key !== "Escape" || event.defaultPrevented || !closeLink) return;
+			// An open confirm inside the drawer closes first.
+			var open = event.target && event.target.closest ? event.target.closest("details[open]") : null;
+			if (open && drawer.contains(open)) {
+				event.preventDefault();
+				open.open = false;
+				var summary = open.querySelector("summary");
+				if (summary) summary.focus();
+				return;
+			}
+			event.preventDefault();
+			window.location.assign(closeLink.getAttribute("href"));
+		});
+	}
+
+	// Inline rename on an account card: the pencil turns the alias into a text
+	// field. Enter asks for confirmation, Enter again (or the Rename button)
+	// saves, Escape cancels. Without this script the pencil is a plain link to
+	// the rename form in the detail view. Text is only ever set as text.
+	var renames = document.querySelectorAll("[data-rename]");
+	Array.prototype.forEach.call(renames, function (root) {
+		var opener = root.querySelector("[data-rename-open]");
+		var view = root.querySelector("[data-rename-view]");
+		var form = root.querySelector("form[data-rename-form]");
+		if (!opener || !view || !form) return;
+		var input = form.querySelector("input[name=newAlias]");
+		var confirm = form.querySelector("[data-rename-confirm]");
+		var shown = form.querySelector("[data-rename-new]");
+		var cancelButton = form.querySelector("[data-rename-cancel]");
+		var submit = confirm ? confirm.querySelector("button[type=submit]") : null;
+		if (!input || !confirm || !shown || !submit) return;
+		var original = input.value;
+
+		function edit() {
+			view.hidden = true;
+			form.hidden = false;
+			confirm.hidden = true;
+			input.readOnly = false;
+			input.value = original;
+			input.focus();
+			input.select();
+		}
+		function cancel() {
+			form.hidden = true;
+			view.hidden = false;
+			opener.focus();
+		}
+		opener.addEventListener("click", function (event) {
+			event.preventDefault();
+			edit();
+		});
+		function review(event) {
+			if (!confirm.hidden) return; // second step: let the form post
+			event.preventDefault();
+			if (input.value === original) {
+				cancel();
+				return;
+			}
+			if (!form.checkValidity()) {
+				form.reportValidity();
+				return;
+			}
+			shown.textContent = input.value;
+			input.readOnly = true;
+			confirm.hidden = false;
+			submit.focus();
+		}
+		form.addEventListener("submit", review);
+		form.addEventListener("keydown", function (event) {
+			if (event.key === "Enter" && event.target === input) review(event);
+			if (event.key !== "Escape") return;
+			event.preventDefault();
+			cancel();
+		});
+		if (cancelButton) cancelButton.addEventListener("click", cancel);
 	});
 
 	var menus = document.querySelectorAll("details[data-account-menu]");

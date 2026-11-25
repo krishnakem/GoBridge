@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { clientLogoHtml, KNOWN_CLIENTS, knownClientFor } from "../src/client-logos";
 import { ICONS } from "../src/html";
-import { meterHtml } from "../src/owner-pages";
+import { meterHtml } from "../src/components";
 
 describe("client logos", () => {
 	it("recognises a client by the host of its redirect URLs, never by its name", () => {
