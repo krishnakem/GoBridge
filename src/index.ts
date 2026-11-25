@@ -8,6 +8,7 @@ import { purgeOldAudit } from "./guardrails";
 import { mcpServerIcons } from "./static-assets";
 import type { Props } from "./utils";
 import { registerTools } from "./tools";
+import { registerUiResources } from "./ui/resources";
 
 export { UsageCounter } from "./usage-counter";
 
@@ -24,6 +25,8 @@ export class GoBridgeMCP extends McpAgent<Env, Record<string, never>, Props> {
 
 	async init() {
 		registerTools(this.server, this.env, () => this.props);
+		// In-chat cards (ui:// resources), when UI_CARDS is not "off".
+		registerUiResources(this.server, this.env);
 	}
 }
 

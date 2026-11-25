@@ -2,6 +2,7 @@
  * Shared pieces for every tool module: input schemas, output caps, the
  * untrusted-content wrapper, and the tool definition shape the registry runs.
  */
+import type { UiCard } from "../ui/resources";
 import { z } from "zod";
 import { ALIAS_PATTERN } from "../accounts";
 import { ToolError } from "../google-api";
@@ -327,6 +328,8 @@ export type ToolDef<S extends z.ZodObject = z.ZodObject> = {
 	countKey?: string;
 	/** Writes: feature switches (besides WRITES_ENABLED) this call needs. */
 	switches?: (args: z.infer<S>) => KillSwitch[];
+	/** In-chat card that shows this tool's result (src/ui), when UI_CARDS allows it. */
+	ui?: UiCard;
 	run: (env: Env, args: z.infer<S>, ctx: ToolContext) => Promise<ToolOutput>;
 };
 

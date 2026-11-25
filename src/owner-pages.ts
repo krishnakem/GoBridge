@@ -14,6 +14,7 @@
  * Like /link: no content without an owner session, and every state-changing
  * action is POST-only with a CSRF token.
  */
+import { uiCardsMode } from "./ui/resources";
 import type { ClientInfo, GrantSummary, OAuthHelpers } from "@cloudflare/workers-oauth-provider";
 import { Hono } from "hono";
 import {
@@ -383,6 +384,7 @@ ${allowedClientsSection(allowed, csrf)}
 <dl class="facts">
 <dt>Environment</dt><dd>${escapeHtml(environmentName(c.env))} <span class="muted mono small">${escapeHtml(c.env.BASE_URL)}</span></dd>
 ${switchRows}
+<dt>In-chat cards <span class="muted mono small">UI_CARDS</span></dt><dd>${{ all: "On, including cards that can send or change things", off: "Off", read: "On, read-only cards" }[uiCardsMode(c.env)]}</dd>
 <dt>Daily send cap</dt><dd>${cap} emails per account per day (send_message, reply and forward)</dd>
 <dt>Daily share cap</dt><dd>${DAILY_SHARE_CAP} share_file calls per account per day</dd>
 <dt>Write rate limit</dt><dd>${WRITE_RATE_LIMIT_PER_HOUR} write actions per account per hour</dd>

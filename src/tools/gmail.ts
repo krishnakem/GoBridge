@@ -636,6 +636,7 @@ export const GMAIL_TOOLS = [
 		description: `Searches Gmail threads with Gmail search syntax (e.g. "from:alice newer_than:7d"). view METADATA_ONLY (default) returns subject, participants and date per thread; MINIMAL returns ids and snippets only. ${UNTRUSTED}`,
 		kind: "read",
 		countKey: "threads",
+		ui: "mail",
 		schema: z.object({
 			account,
 			query: z.string().trim().max(500).optional(),
@@ -698,6 +699,7 @@ export const GMAIL_TOOLS = [
 		description: `Returns the messages of one Gmail thread, oldest first. Capped: the most recent ${LIMITS.threadMessages} messages, about ${LIMITS.threadMessageChars} characters each and ${LIMITS.threadTotalChars} in total. ${UNTRUSTED}`,
 		kind: "read",
 		countKey: "messages",
+		ui: "mail",
 		schema: z.object({ account, threadId: googleId("Gmail thread id"), messageFormat: messageFormat }),
 		run: async (env, args, ctx) => {
 			const format = args.messageFormat === "RAW" ? "FULL_CONTENT" : args.messageFormat;

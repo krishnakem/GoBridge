@@ -262,6 +262,7 @@ export const CALENDAR_TOOLS = [
 		description: `Lists events on one calendar between startTime and endTime, recurring events expanded. fullText filters by words; eventType filters by kind. Up to 250 events per page. ${UNTRUSTED}`,
 		kind: "read",
 		countKey: "events",
+		ui: "calendar",
 		schema: z.object({
 			account,
 			calendarId,

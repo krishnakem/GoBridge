@@ -28,6 +28,7 @@ import { DRIVE_TOOLS } from "./tools/drive";
 import { GMAIL_TOOLS } from "./tools/gmail";
 import { SHEETS_TOOLS } from "./tools/sheets";
 import { SLIDES_TOOLS } from "./tools/slides";
+import { toolUiMeta } from "./ui/resources";
 import { z } from "zod";
 
 const listAccountsTool = tool({
@@ -37,6 +38,7 @@ const listAccountsTool = tool({
 		"Lists the linked Google accounts (alias and email address). Every other tool takes one of these aliases as `account`.",
 	kind: "read",
 	countKey: "accounts",
+	ui: "accounts",
 	schema: z.object({}),
 	run: async (env) => ({
 		accounts: (await listAccounts(env)).map(({ alias, email }) => ({ alias, email })),
@@ -193,9 +195,13 @@ export const runWriteTool = (env: Env, client: ToolClient, name: string, args: u
 
 export function registerTools(server: McpServer, env: Env, client: () => ToolClient): void {
 	for (const definition of ALL_TOOLS) {
+		// Points hosts that support MCP Apps at the card for this tool. The
+		// result itself is the same text for every client.
+		const _meta = toolUiMeta(env, definition.ui, definition.kind);
 		server.registerTool(
 			definition.name,
 			{
+				...(_meta ? { _meta } : {}),
 				annotations: {
 					destructiveHint: definition.kind === "write" ? definition.destructive === true : false,
 					openWorldHint: true,
