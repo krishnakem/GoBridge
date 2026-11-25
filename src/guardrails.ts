@@ -159,6 +159,21 @@ export async function carryOverUsage(env: Env, fromAlias: string, toAlias: strin
 	}
 }
 
+/** How many renames the owner pages accept per hour, across all accounts. */
+export const OWNER_RENAME_LIMIT_PER_HOUR = 20;
+/** Counter object for owner-page actions. Parentheses can never appear in an alias. */
+const OWNER_ACTIONS = "(owner)";
+
+/**
+ * Counts one rename on the owner pages. Returns false once the hourly limit is
+ * reached. Fails closed like every other limit: throws if the counter cannot
+ * be updated. Renames are the ONLY owner action that is limited: revoking a
+ * client and unlinking an account reduce access and must always go through.
+ */
+export async function takeOwnerRename(env: Env): Promise<boolean> {
+	return take(env, OWNER_ACTIONS, "write", OWNER_RENAME_LIMIT_PER_HOUR);
+}
+
 /** Read-only view of an account's counters, for the /settings page. Null if unavailable. */
 export async function writeUsage(
 	env: Env,
