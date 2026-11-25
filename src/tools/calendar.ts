@@ -303,6 +303,7 @@ export const CALENDAR_TOOLS = [
 		title: "Search calendar events",
 		description: `Keyword search over the primary calendar's events (title, description, location, attendees). ${UNTRUSTED}`,
 		kind: "read",
+		ui: "calendar",
 		countKey: "events",
 		schema: z.object({ account, query: z.string().trim().min(1).max(500), pageSize: pageSize(250, 25), pageToken, timeZone }),
 		run: async (env, args) => {
@@ -321,6 +322,7 @@ export const CALENDAR_TOOLS = [
 		title: "Get one calendar event",
 		description: `Returns one calendar event with its description, attendees, reminders and attachments. ${UNTRUSTED}`,
 		kind: "read",
+		ui: "calendar",
 		schema: z.object({ account, eventId: googleId("Calendar event id"), calendarId, timeZone }),
 		run: async (env, args) =>
 			shapeEvent(await googleJson<CalendarEvent>(env, args.account, eventsUrl(args.calendarId, args.eventId), { what: EVENT_ID }), args.timeZone, LIMITS.eventDescriptionChars),
@@ -458,6 +460,7 @@ export const CALENDAR_TOOLS = [
 		title: "Suggest meeting times",
 		description: `Finds free slots for this account and the given attendees between startTime and endTime, using their free/busy information. Nothing is created or sent.`,
 		kind: "read",
+		ui: "calendar",
 		countKey: "suggestions",
 		schema: z.object({
 			account,

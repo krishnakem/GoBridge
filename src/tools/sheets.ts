@@ -199,6 +199,7 @@ export const SHEETS_TOOLS = [
 		title: "Read a range of cells",
 		description: `Returns the values in one A1 range (spreadsheets.values.get). valueRenderOption FORMULA returns formulas instead of results; UNFORMATTED_VALUE returns raw numbers. At most ${LIMITS.cells} cells per call (truncated: true past that). ${UNTRUSTED}`,
 		kind: "read",
+		ui: "workspace",
 		schema: z.object({ account, spreadsheetId, range, valueRenderOption, dateTimeRenderOption, majorDimension }),
 		run: async (env, args) => {
 			const target = new URL(valuesUrl(args.spreadsheetId, args.range));

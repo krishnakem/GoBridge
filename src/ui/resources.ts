@@ -18,11 +18,13 @@ import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { ACCOUNTS_CSS, ACCOUNTS_JS } from "./accounts-card";
 import { APP_JS, BASE_CSS, BRIDGE_JS, HELPERS_JS } from "./bridge";
 import { CALENDAR_CSS, CALENDAR_JS } from "./calendar-card";
+import { DRIVE_CSS, DRIVE_JS } from "./drive-card";
 import { MAIL_CSS, MAIL_JS } from "./mail-card";
+import { WORKSPACE_CSS, WORKSPACE_JS } from "./workspace-card";
 
 export const UI_MIME_TYPE = "text/html;profile=mcp-app";
 
-export type UiCard = "mail" | "calendar" | "accounts";
+export type UiCard = "mail" | "calendar" | "drive" | "workspace" | "accounts";
 export type UiCardsMode = "off" | "read" | "all";
 
 type CardSource = {
@@ -52,6 +54,21 @@ const CARDS: Record<UiCard, CardSource> = {
 		img: "'none'",
 		js: SHARED_JS + CALENDAR_JS,
 		title: "GoBridge calendar",
+	},
+	drive: {
+		css: BASE_CSS + DRIVE_CSS,
+		description: "Shows Drive files, sharing and activity as plain text.",
+		img: "'none'",
+		js: SHARED_JS + DRIVE_JS,
+		title: "GoBridge Drive",
+	},
+	workspace: {
+		css: BASE_CSS + WORKSPACE_CSS,
+		description: "Shows Docs, Sheets and Slides content as plain text, and a slide image GoBridge fetched.",
+		// The slide thumbnail arrives as MCP image content and is shown from a data: URL.
+		img: "data:",
+		js: SHARED_JS + WORKSPACE_JS,
+		title: "GoBridge Workspace",
 	},
 	accounts: {
 		css: BASE_CSS + ACCOUNTS_CSS,

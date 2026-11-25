@@ -829,8 +829,11 @@ describe("allowed AI clients", () => {
 });
 
 /** The ui:// resources and the tools that point at them (test bindings set UI_CARDS to "all"). */
-const CARD_URIS = ["accounts", "calendar", "mail"].map((card) => `ui://gobridge/${card}.html`);
-const CARD_TOOLS = ["get_thread", "list_accounts", "list_events", "search_threads"];
+const CARD_URIS = ["accounts", "calendar", "drive", "mail", "workspace"].map((card) => `ui://gobridge/${card}.html`);
+const CARD_TOOLS = [
+	"get_event", "get_file_permissions", "get_thread", "get_values", "list_accounts", "list_events", "list_recent_files", "query_drive_activity",
+	"read_doc", "read_presentation", "read_slide_page_thumbnail", "search_events", "search_files", "search_threads", "suggest_time",
+];
 
 describe("in-chat cards over /mcp", () => {
 	it("lists and serves the ui:// resources, and points the mail tools at them, only with a valid grant", async () => {

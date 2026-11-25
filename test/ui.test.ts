@@ -8,7 +8,9 @@ import { untrusted } from "../src/tools/common";
 import { ACCOUNTS_JS } from "../src/ui/accounts-card";
 import { APP_JS, BRIDGE_JS, HELPERS_JS } from "../src/ui/bridge";
 import { CALENDAR_JS } from "../src/ui/calendar-card";
+import { DRIVE_JS } from "../src/ui/drive-card";
 import { MAIL_JS } from "../src/ui/mail-card";
+import { WORKSPACE_JS } from "../src/ui/workspace-card";
 import { cardHtml, registerUiResources, UI_CARDS, UI_MIME_TYPE, uiCardsMode, uiResourceUri } from "../src/ui/resources";
 import { expectInert, HOSTILE, mountCard, textResult } from "./helpers/fake-dom";
 
@@ -23,16 +25,32 @@ const SHARED = BRIDGE_JS + HELPERS_JS + APP_JS;
 const mailScript = SHARED + MAIL_JS;
 const calendarScript = SHARED + CALENDAR_JS;
 const accountsScript = SHARED + ACCOUNTS_JS;
-const CARD_SOURCES = [BRIDGE_JS, HELPERS_JS, APP_JS, MAIL_JS, CALENDAR_JS, ACCOUNTS_JS];
+const driveScript = SHARED + DRIVE_JS;
+const workspaceScript = SHARED + WORKSPACE_JS;
+const CARD_SOURCES = [BRIDGE_JS, HELPERS_JS, APP_JS, MAIL_JS, CALENDAR_JS, ACCOUNTS_JS, DRIVE_JS, WORKSPACE_JS];
 const W = (value: string) => untrusted("email", value);
 const C = (value: string) => untrusted("calendar", value);
+const D = (value: string) => untrusted("drive", value);
+const FORM_TAGS = ["div", "span", "p", "pre", "button", "svg", "path", "label", "input", "textarea", "select", "option"];
+const TABLE_TAGS = [...FORM_TAGS, "table", "thead", "tbody", "tr", "th", "td", "img"];
 
 /** Which card each tool points at. Read tools when cards are on; write tools only when UI_CARDS is "all". */
 const READ_CARDS: Record<string, string> = {
+	get_event: "calendar",
+	get_file_permissions: "drive",
 	get_thread: "mail",
+	get_values: "workspace",
 	list_accounts: "accounts",
 	list_events: "calendar",
+	list_recent_files: "drive",
+	query_drive_activity: "drive",
+	read_doc: "workspace",
+	read_presentation: "workspace",
+	read_slide_page_thumbnail: "workspace",
+	search_events: "calendar",
+	search_files: "drive",
 	search_threads: "mail",
+	suggest_time: "calendar",
 };
 const WRITE_CARDS: Record<string, string> = {};
 const metaFor = (card: string) => ({ ui: { resourceUri: `ui://gobridge/${card}.html` }, "ui/resourceUri": `ui://gobridge/${card}.html` });
@@ -40,20 +58,43 @@ const expectedMeta = (cards: Record<string, string>) => Object.fromEntries(Objec
 
 /** URLs that may appear in a card's source: an XML namespace name and GoBridge's own fixed link targets. */
 /** img-src in each card's own policy: 'none' unless listed. */
-const IMG_SRC: Record<string, string> = {};
+const IMG_SRC: Record<string, string> = { workspace: "data:" };
 
-const ALLOWED_URLS = new Set(["http://www.w3.org/2000/svg", "https://calendar.google.com/calendar/event?eid=", "https://gobridge.test/link"]);
+const ALLOWED_URLS = new Set(["http://www.w3.org/2000/svg", "https://calendar.google.com/calendar/event?eid=", "https://docs.google.com/", "https://gobridge.test/link"]);
 
 /** Minimal valid arguments for every card-backed tool (the account alias is added by the test). */
 const CARD_TOOL_ARGS: Record<string, Record<string, unknown>> = {
+	get_event: { eventId: "e1" },
+	get_file_permissions: { fileId: "f1" },
 	get_thread: { threadId: "t1" },
+	get_values: { range: "Sheet1!A1:C3", spreadsheetId: "s1" },
 	list_accounts: {},
 	list_events: { startTime: "2026-10-05T00:00:00", endTime: "2026-10-06T00:00:00" },
+	list_recent_files: {},
+	query_drive_activity: { itemName: "f1" },
+	read_doc: { commentsIncluded: true, documentId: "d1" },
+	read_presentation: { presentationId: "p1" },
+	read_slide_page_thumbnail: { pageId: "g1", presentationId: "p1" },
+	search_events: { query: "standup" },
+	search_files: { query: "title contains 'budget'" },
 	search_threads: { query: "is:unread", view: "MINIMAL" },
+	suggest_time: { attendeeEmails: ["dana@example.com"], endTime: "2030-01-08T17:00:00", startTime: "2030-01-07T09:00:00" },
 };
 
 /** A stand-in Google response with hostile text in every field a card tool reads. */
 const GENERIC_GOOGLE = {
+	activities: [{ actors: [{ user: { knownUser: { isCurrentUser: true } } }], primaryActionDetail: { rename: { newTitle: HOSTILE.subject, oldTitle: "Old" } }, targets: [{ driveItem: { name: "items/f1", title: HOSTILE.file } }], timestamp: "2026-10-05T13:00:00Z" }],
+	body: { content: [{ paragraph: { elements: [{ textRun: { content: `${HOSTILE.body}\n` } }] } }] },
+	comments: [{ author: { displayName: HOSTILE.from }, content: HOSTILE.body, id: "c1" }],
+	contentUrl: "https://lh3.googleusercontent.com/thumbnail",
+	documentId: "d1",
+	files: [{ id: "f1", mimeType: "application/pdf", name: HOSTILE.file }],
+	heightPx: 900,
+	permissions: [{ id: "p1", role: "reader", type: "anyone" }, { displayName: HOSTILE.from, emailAddress: "dana@example.com", id: "p2", role: "writer", type: "user" }],
+	slides: [{ objectId: "g1", pageElements: [{ shape: { text: { textElements: [{ textRun: { content: HOSTILE.subject } }] } } }] }],
+	title: HOSTILE.subject,
+	values: [["Item", "Amount"], [HOSTILE.subject, "-12.50"]],
+	widthPx: 1600,
 	id: "x1",
 	items: [{ end: { dateTime: "2026-10-05T14:00:00Z" }, id: "e1", start: { dateTime: "2026-10-05T13:00:00Z" }, summary: HOSTILE.subject }],
 	messages: [{ id: "m1", labelIds: ["INBOX"], payload: { body: { data: btoa("Body") }, headers: [{ name: "Subject", value: HOSTILE.subject }], mimeType: "text/plain" }, threadId: "t1" }],
@@ -138,7 +179,8 @@ describe("ui:// resources", () => {
 				// No outside URL anywhere in the bundle: the only URLs are an XML
 				// namespace name and GoBridge's own fixed link targets.
 				for (const url of html.match(/[a-z][a-z0-9+.-]*:\/\/[^\s"'`<>)\\]*/gi) ?? []) expect(ALLOWED_URLS, `${card}: ${url}`).toContain(url);
-				expect(html).not.toMatch(/\/\/[a-z0-9-]+\.(com|net|org|io|dev|app)\b(?!\/calendar\/event)/i);
+				// No protocol-relative address either.
+				expect(html).not.toMatch(/["'`(=\s]\/\/[a-z0-9-]+(\.[a-z0-9-]+)+/i);
 				expect(html).not.toMatch(/@import|url\s*\(|\bfetch\s*\(|XMLHttpRequest|WebSocket|EventSource|sendBeacon|importScripts|navigator\./);
 
 				// One script, one style, no markup that loads or submits anything.
@@ -173,7 +215,7 @@ describe("ui:// resources", () => {
 
 	it("never uses an HTML-parsing or code-evaluating sink in card scripts", () => {
 		for (const source of CARD_SOURCES) {
-			expect(source).not.toMatch(/innerHTML|outerHTML|insertAdjacentHTML|document\.write|\beval\s*\(|new Function|setTimeout\s*\(\s*["']|setInterval|srcdoc|createContextualFragment|DOMParser|\.href\s*=|location\b|window\.open/);
+			expect(source).not.toMatch(/innerHTML|outerHTML|insertAdjacentHTML|document\.write|\beval\s*\(|new Function|setTimeout\s*\(\s*["']|setInterval|srcdoc|createContextualFragment|DOMParser|\.href\s*=|(window|document|self|top)\.location|\blocation\.(href|assign|replace|reload)|window\.open/);
 			expect(source).not.toMatch(/ui\/message|ui\/update-model-context|sampling\/|console\./);
 			// Attributes are only ever set from constants: a literal name, then a literal or a fixed icon path.
 			for (const call of source.match(/setAttribute\([^)]*\)/g) ?? []) {
@@ -434,6 +476,448 @@ describe("calendar card", () => {
 		expect(texts).toContain(HOSTILE.subject);
 		expect(card.nodes().find((n) => n.className.startsWith("chip"))!.className).toBe("chip chip-other");
 		expectInert(card);
+	});
+});
+
+describe("calendar card: events, search and suggested times", () => {
+	const eventData = {
+		attendees: [
+			{ displayName: C(HOSTILE.from), email: C("dana@example.com"), responseStatus: "accepted" },
+			{ email: C("me@example.com"), responseStatus: "needsAction", self: true },
+			{ email: C("lee@example.com"), optional: true, responseStatus: HOSTILE.subject },
+		],
+		attendeesOmitted: 2,
+		description: C(HOSTILE.body),
+		end: "2026-10-05T10:00:00-04:00",
+		eventId: "e1",
+		htmlLink: "https://www.google.com/calendar/event?eid=YWJjMTIz",
+		location: C(HOSTILE.subject),
+		start: "2026-10-05T09:00:00-04:00",
+		summary: C(HOSTILE.file),
+		timeZone: "America/Detroit",
+	};
+
+	it("shows one event with its guests and RSVPs, hostile text inert", async () => {
+		const card = await mountCard(calendarScript, { tool: "get_event" });
+		card.notify("ui/notifications/tool-input", { arguments: { account: "gmail", eventId: "e1" } });
+		card.notify("ui/notifications/tool-result", textResult(eventData));
+		const texts = card.root.texts();
+		expect(texts).toContain(HOSTILE.file);
+		expect(texts).toContain(HOSTILE.body);
+		expect(texts).toContain(HOSTILE.subject);
+		expect(texts).toContain("3 guests");
+		expect(texts).toContain(`${HOSTILE.from} · dana@example.com`);
+		expect(texts).toContain("me@example.com (you)");
+		expect(texts).toEqual(expect.arrayContaining(["Yes", "No reply", "Unknown", "Optional", "2 more guests not shown."]));
+		expect(card.root.textContent).toContain("9 AM to 10 AM (America/Detroit)");
+		card.buttons("Open in Calendar")[0].click();
+		expect(card.sent.find((m) => m.method === "ui/open-link").params).toEqual({ url: "https://calendar.google.com/calendar/event?eid=YWJjMTIz" });
+		expectInert(card);
+	});
+
+	it("opens only Google's own event link, rebuilt on calendar.google.com", async () => {
+		for (const htmlLink of ["javascript:alert(1)", "https://evil.example/calendar/event?eid=abc", "http://www.google.com/calendar/event?eid=abc", "https://www.google.com/calendar/event?eid=a%22b", "https://www.google.com/calendar/event"]) {
+			const card = await mountCard(calendarScript, { tool: "get_event" });
+			card.notify("ui/notifications/tool-result", textResult({ ...eventData, htmlLink }));
+			expect(card.buttons("Open in Calendar"), htmlLink).toEqual([]);
+		}
+	});
+
+	it("groups search results by week and opens an event through get_event", async () => {
+		vi.useFakeTimers({ now: new Date(2026, 9, 7, 12), toFake: ["Date"] });
+		try {
+			const card = await mountCard(calendarScript, { tool: "search_events" });
+			card.notify("ui/notifications/tool-input", { arguments: { account: "michigan", query: "review" } });
+			const at = (id: string, date: string) => ({ end: `${date}T10:00:00-04:00`, eventId: id, location: C("Room 2"), start: `${date}T09:00:00-04:00`, summary: C(`Event ${id}`) });
+			card.notify("ui/notifications/tool-result", textResult({ events: [at("a", "2026-10-01"), at("b", "2026-10-05"), at("c", "2026-10-11"), at("d", "2026-10-12"), at("e", "2026-11-20")], nextPageToken: "n2" }));
+			const order = card.root.texts().filter((t) => ["Earlier", "This week", "Next week", "Later"].includes(t) || /^Event [a-e]$/.test(t));
+			expect(order, JSON.stringify(order)).toEqual(["Earlier", "Event a", "This week", "Event b", "Event c", "Next week", "Event d", "Later", "Event e"]);
+			expect(card.root.textContent).toContain("9 AM to 10 AM · Room 2");
+			expect(card.calls()).toEqual([]);
+			card.buttons("Event d")[0].click();
+			expect(card.pendingCalls()).toEqual([{ arguments: { account: "michigan", eventId: "d" }, name: "get_event" }]);
+			await card.reply("tools/call", textResult(eventData));
+			expect(card.root.texts()).toContain("get_event");
+			card.buttons("Back")[0].click();
+			card.buttons("Load more")[0].click();
+			expect(card.pendingCalls()).toEqual([{ arguments: { account: "michigan", pageToken: "n2", query: "review" }, name: "search_events" }]);
+		} finally {
+			vi.useRealTimers();
+		}
+	});
+
+	it("shows suggested times as day columns with a best pick and a chosen slot", async () => {
+		const card = await mountCard(calendarScript, { tool: "suggest_time" });
+		card.notify("ui/notifications/tool-input", { arguments: { account: "gmail", attendeeEmails: ["dana@example.com"], durationMinutes: 30 } });
+		card.notify(
+			"ui/notifications/tool-result",
+			textResult({
+				checked: ["me@example.com", "dana@example.com"],
+				durationMinutes: 30,
+				freeBusyUnavailableFor: ["dana@example.com"],
+				suggestions: [
+					{ end: "2026-10-05T09:30:00-04:00", start: "2026-10-05T09:00:00-04:00" },
+					{ end: "2026-10-05T14:30:00-04:00", start: "2026-10-05T14:00:00-04:00" },
+					{ end: "2026-10-06T10:30:00-04:00", start: "2026-10-06T10:00:00-04:00" },
+					{ end: HOSTILE.subject, start: HOSTILE.body },
+				],
+				timeZone: "America/Detroit",
+			}),
+		);
+		const slots = card.nodes().filter((n) => n.tagName === "button" && n.className.includes("slot"));
+		expect(slots.map((s) => [s.textContent, s.className])).toEqual([
+			["9 AM to 9:30 AM", "btn slot slot-best"],
+			["2 PM to 2:30 PM", "btn slot"],
+			["10 AM to 10:30 AM", "btn slot"],
+		]);
+		expect(card.root.textContent).toContain("Pick a time.");
+		expect(card.root.textContent).toContain("1 calendar could not be read and is not counted.");
+		// The addresses GoBridge checked are counted, not listed.
+		expect(card.root.textContent).not.toContain("me@example.com");
+		slots[2].click();
+		expect(card.root.textContent).toContain("Chosen: Tuesday, Oct 6, 10 AM to 10:30 AM (America/Detroit)");
+		expect(card.nodes().filter((n) => n.className.includes("slot-on"))).toHaveLength(1);
+		// Read-only build: no way to book from the card.
+		expect(card.buttons("Book")).toEqual([]);
+		expectInert(card);
+	});
+
+	it("finds free time for the shown day only after the user fills in the form", async () => {
+		const card = await mountCard(calendarScript, { tool: "list_events" });
+		card.notify("ui/notifications/tool-input", { arguments: { account: "gmail", startTime: "2026-10-05T00:00:00", timeZone: "America/Detroit" } });
+		card.notify("ui/notifications/tool-result", textResult({ events: [] }));
+		card.buttons("Find free time")[0].click();
+		card.buttons("Find times")[0].click();
+		expect(card.root.textContent).toContain("Enter at least one email address.");
+		expect(card.calls()).toEqual([]);
+		card.control("Who to meet").enter("Dana <dana@example.com>, lee@example.com");
+		card.control("Length").enter("60");
+		card.buttons("Find times")[0].click();
+		expect(card.calls()).toEqual([
+			{
+				arguments: { account: "gmail", attendeeEmails: ["dana@example.com", "lee@example.com"], durationMinutes: 60, endTime: "2026-10-05T17:00:00", startTime: "2026-10-05T09:00:00", timeZone: "America/Detroit" },
+				name: "suggest_time",
+			},
+		]);
+		await card.reply("tools/call", textResult({ suggestions: [], timeZone: "America/Detroit" }));
+		expect(card.root.textContent).toContain("No time fits everyone in this range.");
+		// Back goes to the day, not to the form.
+		card.buttons("Back")[0].click();
+		expect(card.root.texts()).toContain("list_events");
+		expectInert(card, FORM_TAGS);
+	});
+});
+
+describe("drive card", () => {
+	const FOLDER = "application/vnd.google-apps.folder";
+	const file = (id: string, name: string, mimeType: string, extra: Record<string, unknown> = {}) => ({ id, mimeType, modifiedTime: "2026-10-05T13:00:00Z", name: D(name), ...extra });
+
+	it("lists files with type badges and shows hostile names as inert text", async () => {
+		const card = await mountCard(driveScript, { tool: "search_files" });
+		card.notify("ui/notifications/tool-input", { arguments: { account: "kemisetti", query: "title contains 'plan'" } });
+		card.notify(
+			"ui/notifications/tool-result",
+			textResult({
+				files: [
+					file("f1", "Folder", FOLDER),
+					file("f2", HOSTILE.file, "application/vnd.google-apps.document"),
+					file("f3", HOSTILE.subject, "application/vnd.google-apps.spreadsheet"),
+					file("f4", HOSTILE.long, "application/vnd.google-apps.presentation"),
+					file("f5", "a.pdf", "application/pdf"),
+					file("f6", "notes.md", "text/plain"),
+					file(HOSTILE.subject, HOSTILE.body, HOSTILE.subject, { modifiedTime: HOSTILE.subject, webViewLink: "javascript:alert(1)" }),
+				],
+			}),
+		);
+		const badges = card.nodes().filter((n) => n.className.startsWith("type"));
+		expect(badges.map((b) => b.textContent)).toEqual(["DIR", "DOC", "XLS", "PPT", "PDF", "MD", "FILE"]);
+		expect(card.root.texts()).toEqual(expect.arrayContaining([HOSTILE.file, HOSTILE.subject, HOSTILE.long, HOSTILE.body]));
+		expect(card.calls()).toEqual([]);
+
+		// A file with a hostile id and link offers nothing that would use them.
+		card.buttons(HOSTILE.body)[0].click();
+		expect(card.buttons("Open in Drive")).toEqual([]);
+		expect(card.buttons("Who has access")).toEqual([]);
+		expect(card.buttons("Activity")).toEqual([]);
+		expectInert(card, FORM_TAGS);
+	});
+
+	it("browses folders and searches by name with the words safely quoted", async () => {
+		const card = await mountCard(driveScript, { tool: "search_files" });
+		card.notify("ui/notifications/tool-input", { arguments: { account: "kemisetti", pageSize: 5, query: "sharedWithMe = true" } });
+		card.notify("ui/notifications/tool-result", textResult({ files: [file("fold1", "Taxes", FOLDER)], nextPageToken: "p2" }));
+
+		card.buttons("Load more")[0].click();
+		expect(card.pendingCalls()).toEqual([{ arguments: { account: "kemisetti", pageSize: 5, pageToken: "p2", query: "sharedWithMe = true" }, name: "search_files" }]);
+		await card.reply("tools/call", textResult({ files: [file("f9", "More", "application/pdf")] }));
+		expect(card.root.textContent).toContain("More");
+
+		card.buttons("Taxes")[0].click();
+		expect(card.pendingCalls()).toEqual([{ arguments: { account: "kemisetti", pageSize: 5, query: "trashed = false and 'fold1' in parents" }, name: "search_files" }]);
+		await card.reply("tools/call", textResult({ files: [file("f2", "2025.pdf", "application/pdf")] }));
+		expect(card.root.texts()).toEqual(expect.arrayContaining(["Drive", "Taxes", "2025.pdf"]));
+
+		card.control("Search in this folder").enter(String.raw`it's \ "2025"`);
+		card.buttons("Search")[0].click();
+		expect(card.pendingCalls()[0].arguments.query).toBe(String.raw`trashed = false and 'fold1' in parents and title contains 'it\'s \\ "2025"'`);
+		await card.reply("tools/call", textResult({ files: [] }));
+		expect(card.root.textContent).toContain("No files found.");
+
+		card.control("Folders only").click();
+		expect(card.pendingCalls()[0].arguments.query).toBe(String.raw`trashed = false and 'fold1' in parents and title contains 'it\'s \\ "2025"' and mimeType = 'application/vnd.google-apps.folder'`);
+		await card.reply("tools/call", textResult("Rate limit reached", true));
+		expect(card.root.textContent).toContain("Rate limit reached");
+
+		// Back to the top through the breadcrumb.
+		card.buttons("Drive")[0].click();
+		expect(card.pendingCalls()[0].arguments.query).toBe("trashed = false and mimeType = 'application/vnd.google-apps.folder'");
+	});
+
+	it("opens a file's sharing, activity and Drive link from its detail view", async () => {
+		const card = await mountCard(driveScript, { tool: "list_recent_files" });
+		card.notify("ui/notifications/tool-input", { arguments: { account: "gmail", orderBy: "recency" } });
+		card.notify(
+			"ui/notifications/tool-result",
+			textResult({ files: [file("f1", "Budget", "application/vnd.google-apps.spreadsheet", { owners: ["me@example.com"], shared: true, webViewLink: "https://docs.google.com/spreadsheets/d/f1/edit" })], nextPageToken: "r2" }),
+		);
+		expect(card.nodes().filter((n) => n.className === "file-tile")).toHaveLength(1);
+		expect(card.nodes().find((n) => n.className.includes("tile-block"))!.className).toBe("type type-xls tile-block");
+		card.buttons("Load more")[0].click();
+		expect(card.pendingCalls()).toEqual([{ arguments: { account: "gmail", orderBy: "recency", pageToken: "r2" }, name: "list_recent_files" }]);
+		await card.reply("tools/call", textResult({ files: [] }));
+
+		card.buttons("Budget")[0].click();
+		expect(card.root.texts()).toEqual(expect.arrayContaining(["Budget", "Shared", "me@example.com"]));
+		card.buttons("Open in Drive")[0].click();
+		expect(card.sent.find((m) => m.method === "ui/open-link").params).toEqual({ url: "https://docs.google.com/spreadsheets/d/f1/edit" });
+		card.buttons("Who has access")[0].click();
+		expect(card.pendingCalls()).toEqual([{ arguments: { account: "gmail", fileId: "f1" }, name: "get_file_permissions" }]);
+		await card.reply("tools/call", textResult({ fileId: "f1", permissions: [] }));
+		card.buttons("Back")[0].click();
+		card.buttons("Activity")[0].click();
+		expect(card.pendingCalls()).toEqual([{ arguments: { account: "gmail", itemName: "f1" }, name: "query_drive_activity" }]);
+		expectInert(card);
+	});
+
+	it("groups people by role and warns about link and domain sharing", async () => {
+		const card = await mountCard(driveScript, { tool: "get_file_permissions" });
+		card.notify("ui/notifications/tool-input", { arguments: { account: "gmail", fileId: "f1" } });
+		card.notify(
+			"ui/notifications/tool-result",
+			textResult({
+				fileId: "f1",
+				permissions: [
+					{ displayName: D("Me"), emailAddress: D("me@example.com"), role: "owner", type: "user" },
+					{ displayName: D(HOSTILE.from), emailAddress: D(HOSTILE.subject), role: "writer", type: "user" },
+					{ emailAddress: D("c@example.com"), role: "commenter", type: "user" },
+					{ emailAddress: D("v@example.com"), role: "reader", type: "user" },
+					{ emailAddress: D("team@example.com"), role: "writer", type: "group" },
+					{ role: "reader", type: "anyone" },
+					{ domain: HOSTILE.subject, role: HOSTILE.body, type: "domain" },
+				],
+			}),
+		);
+		const texts = card.root.texts();
+		const order = texts.filter((t) => ["Owner", "Editors", "Commenters", "Viewers", "Groups"].includes(t));
+		expect(order).toEqual(["Owner", "Editors", "Commenters", "Viewers", "Groups"]);
+		expect(texts).toContain("Anyone with the link can view this file. This was set outside GoBridge.");
+		expect(texts).toContain(`Everyone at ${HOSTILE.subject} can open this file. This was set outside GoBridge.`);
+		expect(texts).toContain(`${HOSTILE.from} · ${HOSTILE.subject}`);
+		expect(texts).toContain("Can edit");
+		// Read-only build: nothing that shares.
+		expect(card.buttons("Share")).toEqual([]);
+		expect(card.calls()).toEqual([]);
+		expectInert(card);
+	});
+
+	it("shows activity as a timeline without naming other people", async () => {
+		const A = (value: string) => untrusted("activity", value);
+		const card = await mountCard(driveScript, { tool: "query_drive_activity" });
+		card.notify("ui/notifications/tool-input", { arguments: { account: "gmail", itemName: "f1" } });
+		card.notify(
+			"ui/notifications/tool-result",
+			textResult({
+				activities: [
+					{ actions: ["rename"], actors: ["you"], primaryAction: { detail: { newTitle: A(HOSTILE.subject), oldTitle: A("Draft") }, type: "rename" }, targets: [{ id: "f1", title: A(HOSTILE.file), type: "driveItem" }], time: "2026-10-05T13:00:00Z" },
+					{ actors: ["person:1234567", "person:1234567"], primaryAction: { detail: { addedPermissions: [{ role: "reader", type: "anyone" }], removedPermissions: [{ role: "writer", type: "user" }] }, type: "permissionChange" }, targets: [{ id: "f1", title: A("Plan"), type: "driveItem" }], time: { end: "2026-10-04T13:00:00Z" } },
+					{ actors: [HOSTILE.subject], primaryAction: { type: HOSTILE.subject }, targets: [{ parent: { title: A("Notes") }, type: "fileComment" }] },
+				],
+				nextPageToken: "a2",
+			}),
+		);
+		const texts = card.root.texts();
+		expect(texts).toContain(`Renamed ${HOSTILE.file}`);
+		expect(texts).toContain(`Draft → ${HOSTILE.subject}`);
+		expect(texts).toContain("Changed sharing of Plan");
+		expect(texts).toContain("Added: view (anyone) · Removed: 1 permission");
+		expect(texts).toContain("Changed Notes");
+		expect(card.root.textContent).toContain("Someone else · ");
+		expect(card.root.textContent).not.toContain("1234567");
+		card.buttons("Load more")[0].click();
+		expect(card.pendingCalls()).toEqual([{ arguments: { account: "gmail", itemName: "f1", pageToken: "a2" }, name: "query_drive_activity" }]);
+		expectInert(card);
+	});
+});
+
+describe("workspace card", () => {
+	const X = (value: string) => untrusted("docs", value);
+	const para = (text: string, style?: string, extra: Record<string, unknown> = {}) => ({
+		paragraph: { elements: [{ textRun: { content: X(`${text}\n`), ...extra } }], ...(style ? { paragraphStyle: { namedStyleType: style } } : {}) },
+	});
+
+	it("shows a doc as an outline, sections, suggestions and comments, all as text", async () => {
+		const card = await mountCard(workspaceScript, { tool: "read_doc" });
+		card.notify("ui/notifications/tool-input", { arguments: { account: "michigan", documentId: "doc1" } });
+		card.notify(
+			"ui/notifications/tool-result",
+			textResult({
+				body: {
+					content: [
+						{ sectionBreak: {} },
+						para("Plan", "TITLE"),
+						para("Intro text"),
+						para(HOSTILE.subject, "HEADING_2"),
+						{ paragraph: { bullet: { listId: "l1" }, elements: [{ textRun: { content: X("kept ") } }, { textRun: { content: X("added"), suggestedInsertionIds: ["s1"] } }, { textRun: { content: X("gone\n"), suggestedDeletionIds: ["s2"] } }] } },
+						{ table: { tableRows: [{ tableCells: [{ content: [para(HOSTILE.body)] }, { content: [para("B")] }] }] } },
+						para("Budget", "HEADING_2"),
+						para("Numbers"),
+						{ paragraph: { elements: [{ inlineObjectElement: { inlineObjectId: "i1" } }] } },
+					],
+				},
+				comments: [{ author: X(HOSTILE.from), content: X(HOSTILE.body), id: "c1", quoted: X(HOSTILE.subject), replies: [{ author: X("Lee"), content: X(HOSTILE.file) }], resolved: true }],
+				documentId: "doc1",
+				nextPageToken: "e40",
+				title: X(HOSTILE.file),
+			}),
+		);
+		const texts = card.root.texts();
+		expect(texts).toEqual(expect.arrayContaining([HOSTILE.file, "Whole page", "Plan", HOSTILE.subject, "Budget", "Intro text", "kept ", "added", "gone", HOSTILE.body, "[image]", "1 comment", HOSTILE.from, "Resolved", `Lee: ${HOSTILE.file}`]));
+		expect(card.nodes().filter((n) => n.className === "ins").map((n) => n.textContent)).toEqual(["added"]);
+		expect(card.nodes().filter((n) => n.className === "del").map((n) => n.textContent)).toEqual(["gone"]);
+		expect(card.nodes().find((n) => n.className.includes("bullet"))!.className).toBe("para bullet");
+		expect(card.root.textContent).toContain("Suggested additions are underlined");
+		expect(card.calls()).toEqual([]);
+
+		// One section at a time, up to the next heading of the same level.
+		card.buttons(HOSTILE.subject)[0].click();
+		const main = card.nodes().find((n) => n.className === "doc-main")!;
+		expect(main.textContent).toBe(`${HOSTILE.subject}kept addedgone${HOSTILE.body}B`);
+
+		card.buttons("Open in Docs")[0].click();
+		expect(card.sent.find((m) => m.method === "ui/open-link").params).toEqual({ url: "https://docs.google.com/document/d/doc1/edit" });
+		card.buttons("Show suggestions")[0].click();
+		expect(card.pendingCalls()).toEqual([{ arguments: { account: "michigan", documentId: "doc1", suggestionsViewMode: "SUGGESTIONS_INLINE" }, name: "read_doc" }]);
+		await card.reply("tools/call", textResult({ body: { content: [para("Clean")] }, documentId: "doc1", nextPageToken: "e40", title: X("T") }));
+		expect(card.buttons("Hide suggestions")).toHaveLength(1);
+		expect(card.buttons("Back")).toEqual([]);
+		card.buttons("Next page")[0].click();
+		expect(card.pendingCalls()).toEqual([{ arguments: { account: "michigan", documentId: "doc1", pageToken: "e40", suggestionsViewMode: "SUGGESTIONS_INLINE" }, name: "read_doc" }]);
+		expectInert(card, TABLE_TAGS);
+	});
+
+	it("reads every tab and offers no editor link for a hostile id", async () => {
+		const card = await mountCard(workspaceScript);
+		card.notify("ui/notifications/tool-result", textResult({ documentId: 'x"/../../evil', tabs: [{ documentTab: { body: { content: [para("Tab one")] } } }, { documentTab: { body: { content: [para("Tab two")] } } }], title: X("Tabs") }));
+		expect(card.root.texts()).toEqual(expect.arrayContaining(["read_doc", "Tab one", "Tab two"]));
+		expect(card.buttons("Open in Docs")).toEqual([]);
+	});
+
+	it("shows a range as a table with numbers, negatives, sorting and a bar chart", async () => {
+		const S = (value: string) => untrusted("sheets", value);
+		const card = await mountCard(workspaceScript, { tool: "get_values" });
+		card.notify("ui/notifications/tool-input", { arguments: { account: "kemisetti", range: "Sheet1!A1:C4", spreadsheetId: "sheet1" } });
+		card.notify(
+			"ui/notifications/tool-result",
+			textResult({
+				range: "Sheet1!A1:C4",
+				rowsReturned: 4,
+				spreadsheetId: "sheet1",
+				truncated: true,
+				values: [
+					[S("Item"), S("Amount"), S(HOSTILE.subject)],
+					[S("Rent"), S("-1,200.50"), S(HOSTILE.body)],
+					[S("Pay"), S("$3,000"), S('=IMPORTDATA("https://evil.example/x")')],
+					[S(HOSTILE.file), S("(45)"), S("")],
+				],
+			}),
+		);
+		const cells = () => card.nodes().filter((n) => n.tagName === "td");
+		expect(cells().map((c) => c.textContent)).toEqual(["Rent", "-1,200.50", HOSTILE.body, "Pay", "$3,000", '=IMPORTDATA("https://evil.example/x")', HOSTILE.file, "(45)", ""]);
+		expect(cells().map((c) => c.className)).toEqual(["", "num neg", "", "", "num", "", "", "num neg", ""]);
+		const bars = card.nodes().filter((n) => n.className.startsWith("bar ") || n.className === "bar");
+		expect(bars.map((b) => [b.className, b.styles.width])).toEqual([["bar bar-neg", "40.016666666666666%"], ["bar", "100%"], ["bar bar-neg", "1.5%"]]);
+		expect(card.root.textContent).toContain("Only part of the range fits in one answer (10,000 cells).");
+
+		card.buttons("Amount")[0].click();
+		expect(cells().filter((_c, i) => i % 3 === 0).map((c) => c.textContent)).toEqual(["Rent", HOSTILE.file, "Pay"]);
+		card.buttons("Amount")[0].click();
+		expect(cells().filter((_c, i) => i % 3 === 0).map((c) => c.textContent)).toEqual(["Pay", HOSTILE.file, "Rent"]);
+		card.buttons("Clear sort")[0].click();
+		expect(cells()[0].textContent).toBe("Rent");
+		expect(card.calls()).toEqual([]);
+
+		card.buttons("Show formulas")[0].click();
+		expect(card.pendingCalls()).toEqual([{ arguments: { account: "kemisetti", range: "Sheet1!A1:C4", spreadsheetId: "sheet1", valueRenderOption: "FORMULA" }, name: "get_values" }]);
+		await card.reply("tools/call", textResult({ spreadsheetId: "sheet1", values: [[S("Item"), S("Amount")], [S("Rent"), S("=SUM(B3:B9)")], [S("Pay"), S("3000")]] }));
+		expect(card.root.textContent).toContain("Showing formulas as text; they are not run here.");
+		expect(card.nodes().filter((n) => n.className.startsWith("bar"))).toEqual([]);
+		expect(card.buttons("Show values")).toHaveLength(1);
+		expect(card.buttons("Add row")).toEqual([]);
+		expectInert(card, TABLE_TAGS);
+	});
+
+	const shape = (text: string) => ({ shape: { text: { textElements: [{ textRun: { content: untrusted("slides", text) } }] } } });
+	const slide = (id: string, text: string, notes: string) => ({ objectId: id, pageElements: [shape(text), { elementGroup: { children: [shape("Grouped")] } }], slideProperties: { notesPage: { pageElements: [{ shape: {} }, shape(notes)] } } });
+	const PNG = { data: "iVBORw0KGgo=", mimeType: "image/png", type: "image" };
+
+	it("shows slides as a grid built from text, with speaker notes", async () => {
+		const card = await mountCard(workspaceScript, { tool: "read_presentation" });
+		card.notify("ui/notifications/tool-input", { arguments: { account: "gmail", presentationId: "deck1" } });
+		card.notify("ui/notifications/tool-result", textResult({ nextPageToken: "s2", presentationId: "deck1", slideCount: 5, slides: [slide("g1", HOSTILE.subject, "Say hello"), slide("g2", "Second", HOSTILE.body)], title: untrusted("slides", HOSTILE.file) }));
+		expect(card.nodes().filter((n) => n.className.startsWith("slide")).filter((n) => n.tagName === "button")).toHaveLength(2);
+		expect(card.root.texts()).toEqual(expect.arrayContaining([HOSTILE.file, "5 slides", "Slide 1", `${HOSTILE.subject}\nGrouped`, "Say hello"]));
+		card.buttons("Slide 2")[0].click();
+		expect(card.root.texts()).toContain(HOSTILE.body);
+		expect(card.calls()).toEqual([]);
+
+		card.buttons("Show slide image")[0].click();
+		expect(card.pendingCalls()).toEqual([{ arguments: { account: "gmail", pageId: "g2", presentationId: "deck1" }, name: "read_slide_page_thumbnail" }]);
+		await card.reply("tools/call", { content: [PNG, { text: JSON.stringify({ heightPx: 900, pageId: "g2", presentationId: "deck1", widthPx: 1600 }), type: "text" }] });
+		const image = card.nodes().find((n) => n.tagName === "img")!;
+		expect(image.attributes.src).toBe("data:image/png;base64,iVBORw0KGgo=");
+		expect(card.root.textContent).toContain("Slide 2 of 2");
+		expect(card.root.texts()).toContain(HOSTILE.body);
+		expect(card.labelled("Next slide")[0].disabled).toBe(true);
+		card.labelled("Previous slide")[0].click();
+		expect(card.pendingCalls()).toEqual([{ arguments: { account: "gmail", pageId: "g1", presentationId: "deck1" }, name: "read_slide_page_thumbnail" }]);
+		expectInert(card, TABLE_TAGS);
+	});
+
+	it("shows only a PNG that came as image content, and loads the slide list on request", async () => {
+		const summary = { text: JSON.stringify({ heightPx: 900, pageId: "g1", presentationId: "deck9", widthPx: 1600 }), type: "text" };
+		for (const bad of [{ ...PNG, mimeType: "image/svg+xml" }, { ...PNG, data: 'x" onerror="alert(1)' }, { ...PNG, data: "https://evil.example/pixel.gif" }, { data: PNG.data, mimeType: "image/png", type: "text" }]) {
+			const card = await mountCard(workspaceScript, { tool: "read_slide_page_thumbnail" });
+			card.notify("ui/notifications/tool-input", { arguments: { account: "gmail", pageId: "g1", presentationId: "deck9" } });
+			card.notify("ui/notifications/tool-result", { content: [bad, summary] });
+			expect(card.nodes().filter((n) => n.tagName === "img"), JSON.stringify(bad)).toEqual([]);
+			expect(card.root.textContent).toContain("The slide image is not available.");
+		}
+		const card = await mountCard(workspaceScript, { tool: "read_slide_page_thumbnail" });
+		card.notify("ui/notifications/tool-input", { arguments: { account: "gmail", pageId: "g1", presentationId: "deck9", thumbnailProperties: { thumbnailSize: "LARGE" } } });
+		card.notify("ui/notifications/tool-result", { content: [PNG, summary] });
+		expect(card.nodes().filter((n) => n.tagName === "img")).toHaveLength(1);
+		expect(card.labelled("Next slide")).toEqual([]);
+		expect(card.calls()).toEqual([]);
+		card.buttons("Load slide list")[0].click();
+		expect(card.pendingCalls()).toEqual([
+			{ arguments: { account: "gmail", fields: ["presentationId", "slides.objectId", "slides.slideProperties.notesPage.pageElements.shape.text"], presentationId: "deck9" }, name: "read_presentation" },
+		]);
+		await card.reply("tools/call", textResult({ presentationId: "deck9", slides: [slide("g1", "", "First notes"), slide("g2", "", "")] }));
+		expect(card.root.textContent).toContain("Slide 1 of 2");
+		expect(card.root.texts()).toContain("First notes");
+		card.labelled("Next slide")[0].click();
+		expect(card.pendingCalls()).toEqual([{ arguments: { account: "gmail", pageId: "g2", presentationId: "deck9", thumbnailProperties: { thumbnailSize: "LARGE" } }, name: "read_slide_page_thumbnail" }]);
+		expectInert(card, TABLE_TAGS);
 	});
 });
 

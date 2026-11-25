@@ -31,6 +31,20 @@ export const CALENDAR_CSS = String.raw`
 .ev-conflict { border: 2px solid var(--warn-fg); }
 .ev-pill { position: static; display: inline-block; }
 .outside { display: flex; flex-direction: column; }
+.guest { display: flex; align-items: center; gap: 8px; padding: 6px 16px; border-bottom: 1px solid var(--line); }
+.group { padding: 10px 16px 4px; font-size: 12px; font-weight: 600; color: var(--muted); text-transform: uppercase; letter-spacing: 0.04em; }
+.event-row { flex-direction: row; align-items: center; gap: 12px; }
+.date-block { flex: none; width: 44px; text-align: center; border: 1px solid var(--line); border-radius: 8px; padding: 2px 0; background: var(--bg-soft); }
+.date-month { font-size: 11px; font-weight: 600; color: var(--muted); text-transform: uppercase; }
+.date-day { font-size: 16px; font-weight: 600; font-variant-numeric: tabular-nums; }
+.slot-days { display: flex; gap: 12px; padding: 12px 16px; overflow-x: auto; }
+.slot-day { display: flex; flex-direction: column; gap: 6px; min-width: 132px; }
+.slot { justify-content: flex-start; font-variant-numeric: tabular-nums; }
+.slot-best { border-color: var(--accent); border-width: 2px; }
+.slot-on { background: var(--read-bg); color: var(--read-fg); border-color: var(--read-fg); }
+.legend { display: flex; flex-wrap: wrap; gap: 12px; padding: 0 16px 12px; font-size: 12px; color: var(--muted); }
+.key { display: inline-block; width: 12px; height: 12px; border-radius: 3px; border: 1px solid var(--line); vertical-align: -2px; margin-right: 4px; }
+.key-best { border: 2px solid var(--accent); }
 `;
 
 export const CALENDAR_JS = String.raw`
@@ -256,14 +270,233 @@ export const CALENDAR_JS = String.raw`
 				account: state.others && state.others.length ? "" : account,
 				line: App.argsLine(args),
 				body: [nav, allDay.length ? strip : null, timeline, outside.length ? later : null, state.others && state.others.length ? legend : null],
-				actions: [account && !state.others ? button("Show other accounts", "btn", showOthers) : null],
+				actions: [
+					account
+						? button("Find free time", "btn", function () {
+								findTimeScreen(state.day, zone, account);
+							})
+						: null,
+					account && !state.others ? button("Show other accounts", "btn", showOthers) : null,
+				],
 				note: notes.join(" ") + " Event text renders as plain text.",
 			});
 		});
 	});
 
+	var RSVP = { accepted: ["Yes", "tag good"], declined: ["No", "tag bad"], tentative: ["Maybe", "tag tag-warn"], needsAction: ["No reply", "tag"] };
+	function rsvpTag(status) {
+		var known = Object.prototype.hasOwnProperty.call(RSVP, status) ? RSVP[status] : ["Unknown", "tag"];
+		return el("span", known[1], known[0]);
+	}
+	function whenLine(event) {
+		var start = parts(event.start);
+		return (start ? dayLabel(start.date) + ", " : "") + range(event) + (event.timeZone ? " (" + event.timeZone + ")" : "");
+	}
+
+	/** One event in full. Also the receipt for the calendar write tools. */
+	function eventScreen(tool, event, args, account, banner) {
+		App.go(function () {
+			var guests = Array.isArray(event.attendees) ? event.attendees : [];
+			var top = el("div", "pad stack", null, el("div", "title", event.summary || "Untitled event"), el("div", null, whenLine(event)));
+			if (event.location) top.appendChild(el("div", "muted", event.location));
+			if (event.status === "cancelled") top.appendChild(el("span", "tag tag-warn", "Cancelled"));
+			var body = [banner ? el("div", "banner banner-ok", banner) : null, top];
+			if (event.description) body.push(el("div", "pad", null, el("pre", "text", event.description)));
+			if (guests.length) {
+				body.push(el("div", "group", plural(guests.length, "guest")));
+				guests.forEach(function (guest) {
+					body.push(
+						el(
+							"div",
+							"guest",
+							null,
+							el("span", "grow clip", (guest.displayName ? guest.displayName + " · " : "") + (guest.email || "Guest") + (guest.self ? " (you)" : "")),
+							guest.optional ? el("span", "tag", "Optional") : null,
+							rsvpTag(guest.responseStatus)
+						)
+					);
+				});
+				if (Number(event.attendeesOmitted) > 0) body.push(el("div", "footnote", plural(Number(event.attendeesOmitted), "more guest") + " not shown."));
+			}
+			App.draw({
+				tool: tool,
+				account: account,
+				line: App.argsLine(args),
+				body: body,
+				actions: [linkButton("Open in Calendar", calendarLink(event.htmlLink), CALENDAR_HOSTS, "btn btn-primary")],
+				note: "Event text renders as plain text.",
+			});
+		});
+	}
+
+	App.view("get_event", function (parsed, args, account) {
+		eventScreen("get_event", parsed.data, args, account, "");
+	});
+
+	App.view("search_events", function (parsed, args, account) {
+		var state = { events: Array.isArray(parsed.data.events) ? parsed.data.events.slice() : [], next: parsed.data.nextPageToken || "", notice: "" };
+		function loadMore() {
+			var more = {};
+			Object.keys(args).forEach(function (key) {
+				more[key] = args[key];
+			});
+			more.pageToken = state.next;
+			state.notice = "Loading more…";
+			App.redraw();
+			App.call("search_events", more).then(function (result) {
+				state.notice = result.error || "";
+				if (result.data) {
+					state.events = state.events.concat(Array.isArray(result.data.events) ? result.data.events : []);
+					state.next = result.data.nextPageToken || "";
+				}
+				App.redraw();
+			});
+		}
+		App.go(function () {
+			// Weeks start on Monday, counted from today on the viewer's own clock.
+			var now = today();
+			var weekday = (new Date(Date.parse(now + "T12:00:00Z")).getUTCDay() + 6) % 7;
+			var thisWeek = shiftDay(now, -weekday);
+			var nextWeek = shiftDay(thisWeek, 7);
+			var later = shiftDay(thisWeek, 14);
+			var groups = [["Earlier", []], ["This week", []], ["Next week", []], ["Later", []]];
+			state.events.forEach(function (event) {
+				var start = parts(event.start);
+				var date = start ? start.date : "";
+				var index = !date || date < thisWeek ? 0 : date < nextWeek ? 1 : date < later ? 2 : 3;
+				groups[index][1].push(event);
+			});
+			var body = [];
+			groups.forEach(function (group) {
+				if (!group[1].length) return;
+				body.push(el("div", "group", group[0]));
+				group[1].forEach(function (event) {
+					var start = parts(event.start);
+					var time = start ? Date.parse(start.date + "T12:00:00Z") : NaN;
+					var block = el(
+						"span",
+						"date-block",
+						null,
+						el("div", "date-month", isNaN(time) ? "" : new Date(time).toLocaleDateString(undefined, { month: "short", timeZone: "UTC" })),
+						el("div", "date-day", isNaN(time) ? "?" : String(new Date(time).getUTCDate()))
+					);
+					var row = button("", "item event-row", function () {
+						if (!account || typeof event.eventId !== "string") return;
+						var call = { account: account, eventId: event.eventId };
+						if (typeof args.timeZone === "string") call.timeZone = args.timeZone;
+						App.open("get_event", call);
+					});
+					row.appendChild(block);
+					row.appendChild(
+						el("span", "stack grow", null, el("span", "strong clip", event.summary || "Untitled event"), el("span", "muted clip", [range(event), event.location].filter(Boolean).join(" · ")))
+					);
+					if (account) row.appendChild(accountChip(account));
+					else row.disabled = true;
+					body.push(row);
+				});
+			});
+			if (!state.events.length) body.push(el("p", "note", "No events found."));
+			App.draw({
+				tool: "search_events",
+				account: account,
+				line: App.argsLine(args),
+				body: body,
+				actions: [state.next ? button("Load more", "btn", loadMore) : null],
+				note: (state.notice ? state.notice + " " : "") + "Event text renders as plain text.",
+			});
+		});
+	});
+
+	App.view("suggest_time", function (parsed, args, account) {
+		var data = parsed.data;
+		var slots = (Array.isArray(data.suggestions) ? data.suggestions : []).filter(function (slot) {
+			var start = parts(slot && slot.start);
+			return start && start.minutes !== null;
+		});
+		var state = { chosen: -1 };
+		App.go(function () {
+			var days = [];
+			var byDate = {};
+			slots.forEach(function (slot, index) {
+				var start = parts(slot.start);
+				if (!byDate[start.date]) {
+					byDate[start.date] = el("div", "slot-day", null, el("div", "strong", dayLabel(start.date)));
+					days.push(byDate[start.date]);
+				}
+				var node = button(range(slot), "btn slot" + (index === 0 ? " slot-best" : "") + (index === state.chosen ? " slot-on" : ""), function () {
+					state.chosen = index;
+					App.redraw();
+				});
+				byDate[start.date].appendChild(node);
+			});
+			var columns = el("div", "slot-days");
+			days.forEach(function (day) {
+				columns.appendChild(day);
+			});
+			var unchecked = Array.isArray(data.freeBusyUnavailableFor) ? data.freeBusyUnavailableFor.length : 0;
+			var checked = Array.isArray(data.checked) ? data.checked.length : 0;
+			var legend = el(
+				"div",
+				"legend",
+				null,
+				el("span", null, null, el("span", "key key-best"), el("span", null, "Best pick (earliest)")),
+				el("span", null, null, el("span", "key"), el("span", null, "Everyone free"))
+			);
+			var chosen = state.chosen >= 0 ? slots[state.chosen] : null;
+			var summary = chosen
+				? "Chosen: " + dayLabel(parts(chosen.start).date) + ", " + range(chosen) + (data.timeZone ? " (" + data.timeZone + ")" : "")
+				: slots.length
+					? "Pick a time."
+					: "No time fits everyone in this range.";
+			var notes = [plural(checked, "calendar") + " checked, " + (Number(data.durationMinutes) || 0) + " minutes each."];
+			notes.push("Only times when everyone is free are listed; times when someone is busy are left out.");
+			if (unchecked) notes.push(plural(unchecked, "calendar") + " could not be read and " + (unchecked === 1 ? "is" : "are") + " not counted.");
+			App.draw({
+				tool: "suggest_time",
+				account: account,
+				line: App.argsLine(args),
+				body: [slots.length ? columns : null, slots.length ? legend : null, el("div", "pad strong", summary)],
+				actions: [chosen && typeof bookSlot === "function" ? bookSlot(chosen, args, account, data.timeZone) : null],
+				note: notes.join(" "),
+			});
+		});
+	});
+
+	/** The "Find free time" form on the day view: asks who to meet, then calls suggest_time. */
+	function findTimeScreen(day, zone, account) {
+		var who = input("text", "");
+		var minutes = select([["30", "30 minutes"], ["45", "45 minutes"], ["60", "1 hour"], ["90", "1.5 hours"]], "30");
+		var status = el("div", "muted");
+		App.go(function () {
+			App.draw({
+				tool: "suggest_time",
+				account: account,
+				line: "day: " + day,
+				body: [el("div", "form", null, field("Who to meet (email addresses)", who), field("Length", minutes), status)],
+				actions: [
+					button("Find times", "btn btn-primary", function () {
+						var emails = emailsIn(who.value);
+						if (!emails.length) {
+							status.textContent = "Enter at least one email address.";
+							return;
+						}
+						var call = { account: account, attendeeEmails: emails, startTime: day + "T09:00:00", endTime: day + "T17:00:00", durationMinutes: Number(minutes.value) };
+						if (zone) call.timeZone = zone;
+						App.open("suggest_time", call, true);
+					}),
+				],
+				note: "Looks at free and busy times only, from 9 AM to 5 PM on this day. Nothing is created or sent.",
+			});
+		});
+	}
+
+	/** Phase 3 replaces this with the button that opens the new-event form. */
+	var bookSlot = null;
+
 	App.start("GoBridge calendar", function (data) {
 		if (Array.isArray(data.events)) return "list_events";
+		if (Array.isArray(data.suggestions)) return "suggest_time";
+		if (typeof data.eventId === "string") return "get_event";
 		return "";
 	});
 })();

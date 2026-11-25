@@ -225,6 +225,7 @@ export const DRIVE_TOOLS = [
 		title: "Search Google Drive",
 		description: `Searches Drive with Google's query syntax, e.g. title contains 'budget' and mimeType = 'application/pdf', fullText contains 'quarterly', '<folderId>' in parents, sharedWithMe = true, modifiedTime > '2026-01-01T00:00:00' (title and name both work). Covers My Drive, Shared with me and shared drives. Returns metadata only. ${UNTRUSTED}`,
 		kind: "read",
+		ui: "drive",
 		countKey: "files",
 		schema: z.object({
 			account,
@@ -246,6 +247,7 @@ export const DRIVE_TOOLS = [
 		title: "List recent Drive files",
 		description: `Lists Drive files by recency: recently opened by you (recency), last modified by anyone (lastModified), or last modified by you (lastModifiedByMe). ${UNTRUSTED}`,
 		kind: "read",
+		ui: "drive",
 		countKey: "files",
 		schema: z.object({ account, orderBy: z.enum(["recency", "lastModified", "lastModifiedByMe"]).default("recency"), pageSize: pageSize(100, 10), pageToken }),
 		run: async (env, args) => {
@@ -271,6 +273,7 @@ export const DRIVE_TOOLS = [
 		title: "Get Drive file permissions",
 		description: `Lists who has access to one Drive file (type, role, email or domain). ${UNTRUSTED}`,
 		kind: "read",
+		ui: "drive",
 		countKey: "permissions",
 		schema: z.object({ account, fileId: googleId("Drive file id") }),
 		run: async (env, args) => {

@@ -69,6 +69,7 @@ export const DOCS_TOOLS = [
 		title: "Read a Google Doc",
 		description: `Returns the JSON representation of a Google Doc (documents.get): text runs with their indexes, paragraphs, tables, lists, headers, footers and footnotes. Large documents come back in pages of structural elements: pass nextPageToken as pageToken for the rest. includeTabsContent returns each tab (flattened, with parentTabId) instead of the first tab only. commentsIncluded adds the file's comments. ${UNTRUSTED}`,
 		kind: "read",
+		ui: "workspace",
 		schema: z.object({
 			account,
 			documentId: googleId("Google Doc id (the same as the Drive file id)"),

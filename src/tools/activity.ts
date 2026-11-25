@@ -98,6 +98,7 @@ export const ACTIVITY_TOOLS = [
 		title: "Query Drive activity",
 		description: `Lists recent activity on one Drive file (itemName) or on a folder and everything inside it (ancestorName): who did what and when (create, edit, rename, move, comment, permission changes, delete, restore). Actors are "you", "person:<people id>", "anonymous" or a kind; names are not looked up. filter uses the Drive Activity syntax, e.g. time > "2026-10-01T00:00:00Z" AND detail.action_detail_case:(EDIT RENAME). Needs the Drive Activity permission: accounts linked before 2026-10-08 must be re-linked at /link for this one tool. ${UNTRUSTED}`,
 		kind: "read",
+		ui: "drive",
 		countKey: "activities",
 		schema: z.object({
 			account,
