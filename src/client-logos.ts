@@ -65,15 +65,39 @@ export function knownClientFor(redirectUris: readonly string[]): KnownClient | n
 	return found;
 }
 
+/** Names an app might register under to look like a known client. */
+const BRAND_WORDS = ["claude", "anthropic", "chatgpt", "openai"];
+
+/**
+ * True when a self-reported client name uses a known brand's name. Used only
+ * to flag a card "Unverified" when the redirect URLs do NOT prove that brand;
+ * it never grants a logo or groups two apps together. Compared after Unicode
+ * compatibility folding with everything but letters and digits removed, so
+ * "Chat-GPT" and "ＣＬＡＵＤＥ" are caught. Look-alike letters from other
+ * alphabets are not caught: such a client still gets its own card and a
+ * letter tile, just without the flag.
+ */
+export function claimsKnownBrand(name: string): boolean {
+	const folded = name.normalize("NFKC").toLowerCase().replace(/[^a-z0-9]/g, "");
+	return BRAND_WORDS.some((word) => folded.includes(word));
+}
+
+/** The logo tile for a known client. */
+export function brandLogoHtml(known: KnownClient): string {
+	return `<span class="client-logo"><svg class="${known.className}" viewBox="0 0 24 24" role="img" aria-label="${known.name}"><path d="${known.path}"/></svg></span>`;
+}
+
+/** The letter tile for everything else: the first character of `name`, escaped. */
+export function letterTileHtml(name: string): string {
+	const letter = sanitizeText(name.trim().charAt(0).toUpperCase() || "?");
+	return `<span class="client-logo" aria-hidden="true">${letter}</span>`;
+}
+
 /**
  * The logo tile for a client card: the real mark for a recognised client,
  * otherwise the first letter of `fallbackName` (escaped).
  */
 export function clientLogoHtml(redirectUris: readonly string[], fallbackName: string): string {
 	const known = knownClientFor(redirectUris);
-	if (known) {
-		return `<span class="client-logo"><svg class="${known.className}" viewBox="0 0 24 24" role="img" aria-label="${known.name}"><path d="${known.path}"/></svg></span>`;
-	}
-	const letter = sanitizeText(fallbackName.trim().charAt(0).toUpperCase() || "?");
-	return `<span class="client-logo" aria-hidden="true">${letter}</span>`;
+	return known ? brandLogoHtml(known) : letterTileHtml(fallbackName);
 }
