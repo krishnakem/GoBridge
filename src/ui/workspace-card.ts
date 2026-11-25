@@ -29,7 +29,7 @@ export const WORKSPACE_CSS = String.raw`
 .del { color: var(--bad); text-decoration: line-through; }
 .comment { border: 1px solid var(--line); border-radius: 10px; padding: 8px 10px; display: flex; flex-direction: column; gap: 4px; }
 .quote { border-left: 3px solid var(--line); padding-left: 8px; color: var(--muted); font-size: 12px; }
-.reply { padding-left: 12px; font-size: 13px; }
+.comment-reply { padding-left: 12px; font-size: 13px; }
 .sheet-wrap { overflow: auto; max-height: 420px; }
 .sheet { border-collapse: collapse; font-size: 13px; width: 100%; }
 .sheet th, .sheet td { border: 1px solid var(--line); padding: 4px 8px; text-align: left; vertical-align: top; }
@@ -168,7 +168,7 @@ export const WORKSPACE_JS = String.raw`
 		if (comment.quoted) node.appendChild(el("div", "quote", comment.quoted));
 		if (comment.content) node.appendChild(el("div", "text", comment.content));
 		(Array.isArray(comment.replies) ? comment.replies : []).forEach(function (reply) {
-			node.appendChild(el("div", "reply", (reply.author || "Someone") + ": " + (reply.content || "")));
+			node.appendChild(el("div", "comment-reply", (reply.author || "Someone") + ": " + (reply.content || "")));
 		});
 		return node;
 	}
@@ -395,7 +395,7 @@ export const WORKSPACE_JS = String.raw`
 								App.open("get_values", next, true);
 							})
 						: null,
-					typeof addRowButton === "function" ? addRowButton(data, args, account, grid) : null,
+					addRowButton(data, args, account, grid),
 					linkButton("Open in Sheets", editorLink("spreadsheets", data.spreadsheetId || args.spreadsheetId), DOCS_HOSTS, "btn btn-primary"),
 				],
 				note: notes.join(" "),
@@ -580,11 +580,146 @@ export const WORKSPACE_JS = String.raw`
 		});
 	});
 
-	/** Phase 3 replaces this with the button that opens the add-row form. */
-	var addRowButton = null;
+	/** The button under a range: opens the add-row form built from the header row. */
+	function addRowButton(data, args, account, grid) {
+		var spreadsheetId = data.spreadsheetId || args.spreadsheetId;
+		if (!WRITES || !account || !isId(spreadsheetId) || typeof args.range !== "string" || !grid.length) return null;
+		if (args.valueRenderOption === "FORMULA" || args.majorDimension === "COLUMNS") return null;
+		return button("Add row", "btn", function () {
+			addRowScreen(spreadsheetId, args.range, account, grid);
+		});
+	}
+
+	function addRowScreen(spreadsheetId, range, account, grid) {
+		var header = (grid[0] || []).slice(0, MAX_COLUMNS);
+		var inputs = header.map(function () {
+			return input("text", "");
+		});
+		var mode = select([["RAW", "Store exactly as typed (RAW)"], ["USER_ENTERED", "Let Sheets interpret it: formulas run (USER_ENTERED)"]], "RAW");
+		var status = el("div", "muted");
+		App.go(function () {
+			var form = el("div", "form");
+			header.forEach(function (name, column) {
+				form.appendChild(field(cellText(name) || "Column " + (column + 1), inputs[column]));
+			});
+			form.appendChild(field("How values are stored", mode));
+			form.appendChild(status);
+			var context = el("table", "sheet");
+			var tbody = el("tbody");
+			grid.slice(1).slice(-2).forEach(function (row) {
+				var tr = el("tr");
+				for (var column = 0; column < header.length; column++) tr.appendChild(el("td", null, cellText(row[column])));
+				tbody.appendChild(tr);
+			});
+			context.appendChild(tbody);
+			App.draw({
+				tool: "append_values",
+				account: account,
+				line: "range: " + clip(range, 80),
+				body: [el("div", "group pad", "Last rows, for context"), el("div", "sheet-wrap", null, context), form],
+				actions: [
+					button("Add row", "btn btn-primary", function () {
+						var row = inputs.map(function (control) {
+							return control.value;
+						});
+						if (!row.join("").trim()) {
+							status.textContent = "Fill in at least one cell.";
+							return;
+						}
+						status.textContent = "";
+						var raw = mode.value !== "USER_ENTERED";
+						App.confirm({
+							account: account,
+							action: raw ? "Add one row, stored exactly as typed (RAW)" : "Add one row, interpreted by Sheets (USER_ENTERED): formulas run",
+							target: clip(range, 80),
+							label: "Add row",
+							usage: "write",
+							note: raw
+								? "RAW: text starting with = is stored as text, not as a formula."
+								: "GoBridge refuses formulas that reach outside the spreadsheet (IMPORTDATA, IMPORTXML, IMPORTHTML, IMPORTFEED, IMPORTRANGE, IMAGE, HYPERLINK).",
+							run: function () {
+								// allowExternalFormulas is never set by the card.
+								return App.call("append_values", { account: account, spreadsheetId: spreadsheetId, range: range, values: [row], valueInputOption: raw ? "RAW" : "USER_ENTERED" });
+							},
+							done: function (appended) {
+								App.replace("append_values", { data: appended }, { account: account, spreadsheetId: spreadsheetId, range: range, valueInputOption: raw ? "RAW" : "USER_ENTERED" });
+							},
+						});
+					}),
+				],
+				note: "Values are stored as RAW text unless you pick the other option. Nothing is written until you confirm.",
+			});
+		});
+	}
+
+	App.view("append_values", function (parsed, args, account) {
+		var data = parsed.data;
+		var updates = data.updates || {};
+		var id = data.spreadsheetId || args.spreadsheetId;
+		App.go(function () {
+			var facts = el("div", "pad pairs", null, pair("Account", account || "this account"));
+			if (data.tableRange) facts.appendChild(pair("Table", data.tableRange));
+			if (updates.updatedRange) facts.appendChild(pair("Written to", updates.updatedRange));
+			if (updates.updatedRows !== undefined) facts.appendChild(pair("Rows", String(Number(updates.updatedRows) || 0)));
+			if (updates.updatedCells !== undefined) facts.appendChild(pair("Cells", String(Number(updates.updatedCells) || 0)));
+			facts.appendChild(pair("Stored as", args.valueInputOption === "USER_ENTERED" ? "USER_ENTERED (formulas run)" : "RAW (exactly as typed)"));
+			App.draw({
+				tool: "append_values",
+				account: account,
+				line: App.argsLine(args),
+				body: [el("div", "banner banner-ok", data.appended === true ? "Row added." : "This call did not report an added row."), facts],
+				actions: [linkButton("Open in Sheets", editorLink("spreadsheets", id), DOCS_HOSTS, "btn btn-primary")],
+				note: "This card shows the result. Version history in Sheets can undo it.",
+			});
+		});
+	});
+
+	var URL_REQUESTS = ["insertInlineImage", "replaceImage"];
+	App.view("update_doc", function (parsed, args, account) {
+		var data = parsed.data;
+		var id = data.documentId || args.documentId;
+		// What was asked for, by request type. Names come from the call, shown as text.
+		var counts = {};
+		var order = [];
+		var images = 0;
+		(Array.isArray(args.requests) ? args.requests : []).forEach(function (request) {
+			var type = request && typeof request === "object" ? Object.keys(request)[0] : "";
+			if (!type) return;
+			if (!Object.prototype.hasOwnProperty.call(counts, type)) {
+				counts[type] = 0;
+				order.push(type);
+			}
+			counts[type]++;
+			if (URL_REQUESTS.indexOf(type) !== -1) images++;
+		});
+		App.go(function () {
+			var list = el("div", "pad pairs");
+			order.forEach(function (type) {
+				list.appendChild(pair(String(counts[type]) + " ×", clip(type, 60)));
+			});
+			var applied = Number(data.requestsApplied) || 0;
+			var rule = images
+				? "This call carried " + plural(images, "image request") + ". They ran only because allowExternalUrls was set for this call."
+				: "Image requests from a URL are refused unless allowExternalUrls is set for that call. This call had none.";
+			App.draw({
+				tool: "update_doc",
+				account: account,
+				line: "documentId: " + clip(id || "", 60),
+				body: [
+					el("div", "banner banner-ok", data.updated === true ? "Applied " + plural(applied, "change") + "." : "This call did not report a change."),
+					order.length ? list : null,
+					data.commentError ? el("div", "banner", "A comment request failed: " + data.commentError) : null,
+				],
+				actions: [linkButton("Open in Docs", editorLink("document", id), DOCS_HOSTS, "btn btn-primary")],
+				note: rule + " The changes were made before this card appeared; version history in Docs can undo them.",
+			});
+		});
+	});
 
 	App.start("GoBridge Workspace", function (data) {
 		if (data.body || Array.isArray(data.tabs)) return "read_doc";
+		if (data.appended === true) return "append_values";
+		if (data.updated === true && data.documentId) return "update_doc";
 		if (Array.isArray(data.values)) return "get_values";
 		if (Array.isArray(data.slides)) return "read_presentation";
 		if (typeof data.pageId === "string") return "read_slide_page_thumbnail";

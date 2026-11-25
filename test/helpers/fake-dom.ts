@@ -87,6 +87,10 @@ export class FakeNode {
 	all(): FakeNode[] {
 		return this.children.flatMap((c) => [c, ...c.all()]);
 	}
+	/** The nodes a person could see or press: nothing inside a hidden element. */
+	visible(): FakeNode[] {
+		return this.children.filter((c) => !c.hidden).flatMap((c) => [c, ...c.visible()]);
+	}
 	/** Text set directly on nodes, one entry per node. */
 	texts(): string[] {
 		return [this, ...this.all()].map((n) => n.ownText).filter(Boolean);
@@ -153,7 +157,8 @@ export async function mountCard(script: string, options: MountOptions = {}) {
 		return request;
 	};
 	const notify = (method: string, params: unknown) => host({ jsonrpc: "2.0", method, params });
-	const nodes = () => root.all();
+	// Buttons and fields are looked up among what is on screen, as a person would.
+	const nodes = () => root.visible();
 	const buttons = (label: string) => nodes().filter((n) => n.tagName === "button" && n.textContent.includes(label));
 	const labelled = (aria: string) => nodes().filter((n) => n.attributes["aria-label"] === aria);
 	/** The control inside the <label> whose text starts with `label`. */
@@ -193,7 +198,7 @@ const MARKERS = ["alert", "onerror", "onload", "onmouseover", "javascript:", "ev
  * asked the host for nothing beyond tool calls and approved links.
  */
 export function expectInert(card: MountedCard, allowedTags: string[] = ["div", "span", "p", "pre", "button", "svg", "path"]) {
-	for (const node of [card.root, ...card.nodes()]) {
+	for (const node of [card.root, ...card.root.all()]) {
 		for (const [name, value] of Object.entries(node.attributes)) {
 			for (const marker of MARKERS) expect(value.toLowerCase(), `${name} attribute`).not.toContain(marker);
 			if (name === "src") expect(value).toMatch(/^data:image\/png;base64,[A-Za-z0-9+/=]*$/);

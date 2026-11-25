@@ -501,6 +501,7 @@ export const DRIVE_TOOLS = [
 		title: "Share a Drive file",
 		description: `Gives one person or Google group access to a Drive file as reader, commenter or writer. Sharing with "anyone" or a whole domain is not possible. Google emails the recipient. A daily share cap applies. ${CONFIRM}`,
 		kind: "write",
+		ui: "drive",
 		destructive: true,
 		schema: z.object({ account, fileId: googleId("Drive file id"), emailAddress: email, role: z.enum(["reader", "commenter", "writer"]) }),
 		switches: () => ["DRIVE_SHARE_ENABLED"],

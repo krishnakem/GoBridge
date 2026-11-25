@@ -9,26 +9,32 @@
  * responses reach the client.
  */
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
-import { getAccount, listAccounts } from "./accounts";
+import { aliasesNeedingRelink, getAccount, listAccounts } from "./accounts";
+import { hasCurrentScopes, hasDriveActivityScope } from "./google";
 import { ToolError } from "./google-api";
 import {
 	type AuditMeta,
+	DAILY_SHARE_CAP,
+	dailySendCap,
 	enforceReadRateLimit,
 	enforceWriteRateLimit,
 	type KillSwitch,
+	readRateLimit,
 	recordAudit,
 	recordReadAudit,
 	switchEnabled,
+	WRITE_RATE_LIMIT_PER_HOUR,
+	writeUsage,
 } from "./guardrails";
 import { ACTIVITY_TOOLS } from "./tools/activity";
 import { CALENDAR_TOOLS } from "./tools/calendar";
-import { type McpContent, type ToolDef, tool } from "./tools/common";
+import { account, type McpContent, type ToolDef, tool } from "./tools/common";
 import { DOCS_TOOLS } from "./tools/docs";
 import { DRIVE_TOOLS } from "./tools/drive";
 import { GMAIL_TOOLS } from "./tools/gmail";
 import { SHEETS_TOOLS } from "./tools/sheets";
 import { SLIDES_TOOLS } from "./tools/slides";
-import { toolUiMeta } from "./ui/resources";
+import { toolUiMeta, uiCardsMode } from "./ui/resources";
 import { z } from "zod";
 
 const listAccountsTool = tool({
@@ -44,6 +50,75 @@ const listAccountsTool = tool({
 		accounts: (await listAccounts(env)).map(({ alias, email }) => ({ alias, email })),
 	}),
 });
+
+const GMAIL_SCOPES = ["https://www.googleapis.com/auth/gmail.modify", "https://www.googleapis.com/auth/gmail.send"];
+const CALENDAR_SCOPES = [
+	"https://www.googleapis.com/auth/calendar.events",
+	"https://www.googleapis.com/auth/calendar.calendarlist.readonly",
+	"https://www.googleapis.com/auth/calendar.freebusy",
+];
+const DRIVE_SCOPES = ["https://www.googleapis.com/auth/drive"];
+
+/**
+ * App-only tool for the in-chat cards (owner-approved 2026-11-24). It exists
+ * only while UI_CARDS is on, is marked `visibility: ["app"]` so hosts keep it
+ * out of the model's tool list, and goes through runTool like every other
+ * read: account alias, client id, read rate limit, audit_reads row.
+ *
+ * It returns ONLY numbers and booleans: usage counts, limits, feature
+ * switches and which services the account's grant covers. Never an email
+ * address, id, name or any content.
+ */
+export const CARD_STATUS_TOOL = tool({
+	name: "get_card_status",
+	title: "GoBridge card status",
+	description:
+		"For GoBridge's own in-chat cards. Returns one linked account's usage counts and limits, the feature switches, and which Google services its sign-in covers, as numbers and true/false values only. No email addresses, ids, names or content.",
+	kind: "read",
+	schema: z.object({ account }),
+	run: async (env, args) => {
+		const usage = await writeUsage(env, args.account);
+		if (!usage) {
+			throw new ToolError("counter_unavailable", "GoBridge could not read its usage counters. Try again in a moment.");
+		}
+		const scopes = (await getAccount(env, args.account))?.scopes;
+		const has = (needed: string[]) => Array.isArray(scopes) && needed.every((scope) => scopes.includes(scope));
+		const flagged = (await aliasesNeedingRelink(env)).includes(args.account);
+		return {
+			usage: {
+				readsThisHour: usage.readsThisHour,
+				writesThisHour: usage.writesThisHour,
+				sendsToday: usage.sendsToday,
+				sharesToday: usage.sharesToday,
+			},
+			limits: {
+				readsPerHour: readRateLimit(env),
+				writesPerHour: WRITE_RATE_LIMIT_PER_HOUR,
+				sendsPerDay: dailySendCap(env),
+				sharesPerDay: DAILY_SHARE_CAP,
+			},
+			switches: {
+				writes: switchEnabled(env, "WRITES_ENABLED"),
+				directSend: switchEnabled(env, "DIRECT_SEND_ENABLED"),
+				forward: switchEnabled(env, "FORWARD_ENABLED"),
+				driveWrite: switchEnabled(env, "DRIVE_WRITE_ENABLED"),
+				driveShare: switchEnabled(env, "DRIVE_SHARE_ENABLED"),
+			},
+			services: {
+				gmail: has(GMAIL_SCOPES),
+				calendar: has(CALENDAR_SCOPES),
+				drive: has(DRIVE_SCOPES),
+				driveActivity: hasDriveActivityScope(scopes),
+			},
+			relinkNeeded: flagged || !hasCurrentScopes(scopes),
+		};
+	},
+});
+
+/** The tools this deployment exposes: the 72, plus get_card_status while cards are on. */
+export function toolsFor(env: Env): ToolDef[] {
+	return uiCardsMode(env) === "off" ? ALL_TOOLS : [...ALL_TOOLS, CARD_STATUS_TOOL];
+}
 
 export const ALL_TOOLS: ToolDef[] = [
 	listAccountsTool,
@@ -80,7 +155,7 @@ export async function runTool(
 	name: string,
 	rawArgs: unknown,
 ): Promise<ToolResult> {
-	const definition = ALL_TOOLS.find((t) => t.name === name);
+	const definition = toolsFor(env).find((t) => t.name === name);
 	if (!definition) return failure("Unknown tool.");
 	const isWrite = definition.kind === "write";
 
@@ -194,10 +269,11 @@ export const runWriteTool = (env: Env, client: ToolClient, name: string, args: u
 	runTool(env, client, name, args);
 
 export function registerTools(server: McpServer, env: Env, client: () => ToolClient): void {
-	for (const definition of ALL_TOOLS) {
+	for (const definition of toolsFor(env)) {
 		// Points hosts that support MCP Apps at the card for this tool. The
-		// result itself is the same text for every client.
-		const _meta = toolUiMeta(env, definition.ui, definition.kind);
+		// result itself is the same text for every client. get_card_status is
+		// for the cards only: hosts hide an app-only tool from the model.
+		const _meta = definition === CARD_STATUS_TOOL ? { ui: { visibility: ["app"] } } : toolUiMeta(env, definition.ui, definition.kind);
 		server.registerTool(
 			definition.name,
 			{

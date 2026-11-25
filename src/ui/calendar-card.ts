@@ -31,6 +31,8 @@ export const CALENDAR_CSS = String.raw`
 .ev-conflict { border: 2px solid var(--warn-fg); }
 .ev-pill { position: static; display: inline-block; }
 .outside { display: flex; flex-direction: column; }
+.invite-clash { background: var(--warn-bg); color: var(--warn-fg); }
+.line { flex-wrap: wrap; }
 .guest { display: flex; align-items: center; gap: 8px; padding: 6px 16px; border-bottom: 1px solid var(--line); }
 .group { padding: 10px 16px 4px; font-size: 12px; font-weight: 600; color: var(--muted); text-transform: uppercase; letter-spacing: 0.04em; }
 .event-row { flex-direction: row; align-items: center; gap: 12px; }
@@ -98,7 +100,7 @@ export const CALENDAR_JS = String.raw`
 
 	App.view("list_events", function (parsed, args, account) {
 		var zone = typeof args.timeZone === "string" ? args.timeZone : "";
-		var state = { day: "", entries: [], others: null, notice: "", spans: 0 };
+		var state = { day: "", entries: [], others: null, notice: "", spans: 0, replied: {} };
 		function add(data, alias) {
 			(Array.isArray(data.events) ? data.events : []).forEach(function (event) {
 				state.entries.push({ event: event, account: alias });
@@ -261,6 +263,50 @@ export const CALENDAR_JS = String.raw`
 				if (outside.length) notes.push(plural(outside.length, "event") + " outside 9 AM to 5 PM, listed below the timeline.");
 				if (state.spans > 1) notes.push("This result covers " + state.spans + " days; one day is shown at a time.");
 			}
+			// Invitations on this day that still wait for this account's reply.
+			var invites = [];
+			if (WRITES) {
+				state.entries.forEach(function (entry) {
+					var start = parts(entry.event.start);
+					if (!start || start.date !== state.day || !entry.account || !isId(entry.event.eventId)) return;
+					var mine = (Array.isArray(entry.event.attendees) ? entry.event.attendees : []).filter(function (guest) {
+						return guest.self === true;
+					})[0];
+					var replied = state.replied[entry.account + "/" + entry.event.eventId];
+					if (!replied && !(mine && mine.responseStatus === "needsAction")) return;
+					var clash = timed.some(function (slot) {
+						return slot.entry === entry && slot.conflict;
+					});
+					var row = el("div", "line", null, el("span", "stack grow", null, el("span", "strong clip", entry.event.summary || "Untitled event"), el("span", "muted", range(entry.event) + (clash ? " · Overlaps another event" : ""))), accountChip(entry.account));
+					var eventArgs = entry.account === account && typeof args.calendarId === "string" ? { calendarId: args.calendarId } : {};
+					var answer = function (status, word) {
+						respond(entry.event, eventArgs, entry.account, status, word, "", function () {
+							if (status === "needsAction") delete state.replied[entry.account + "/" + entry.event.eventId];
+							else state.replied[entry.account + "/" + entry.event.eventId] = word;
+							App.redraw();
+						});
+					};
+					if (replied) {
+						row.appendChild(el("span", "tag", "You replied " + replied));
+						row.appendChild(
+							button("Undo", "btn", function () {
+								answer("needsAction", "Undo");
+							})
+						);
+					} else {
+						[["accepted", "Yes"], ["tentative", "Maybe"], ["declined", "No"]].forEach(function (choice) {
+							row.appendChild(
+								button(choice[1], "btn", function () {
+									answer(choice[0], choice[1]);
+								})
+							);
+						});
+					}
+					if (clash) row.className = "line invite-clash";
+					invites.push(row);
+				});
+			}
+			var inviteBlock = invites.length ? el.apply(null, ["div", "outside", null, el("div", "group", "Invitations waiting for your reply")].concat(invites)) : null;
 			var legend = el("div", "wrap pad");
 			shown().forEach(function (alias) {
 				legend.appendChild(accountChip(alias));
@@ -269,8 +315,13 @@ export const CALENDAR_JS = String.raw`
 				tool: "list_events",
 				account: state.others && state.others.length ? "" : account,
 				line: App.argsLine(args),
-				body: [nav, allDay.length ? strip : null, timeline, outside.length ? later : null, state.others && state.others.length ? legend : null],
+				body: [nav, allDay.length ? strip : null, timeline, outside.length ? later : null, inviteBlock, state.others && state.others.length ? legend : null],
 				actions: [
+					WRITES && account
+						? button("New event", "btn", function () {
+								createScreen({ day: state.day, zone: zone }, account);
+							})
+						: null,
 					account
 						? button("Find free time", "btn", function () {
 								findTimeScreen(state.day, zone, account);
@@ -294,7 +345,7 @@ export const CALENDAR_JS = String.raw`
 	}
 
 	/** One event in full. Also the receipt for the calendar write tools. */
-	function eventScreen(tool, event, args, account, banner) {
+	function eventScreen(tool, event, args, account, banner, undoTo) {
 		App.go(function () {
 			var guests = Array.isArray(event.attendees) ? event.attendees : [];
 			var top = el("div", "pad stack", null, el("div", "title", event.summary || "Untitled event"), el("div", null, whenLine(event)));
@@ -318,19 +369,341 @@ export const CALENDAR_JS = String.raw`
 				});
 				if (Number(event.attendeesOmitted) > 0) body.push(el("div", "footnote", plural(Number(event.attendeesOmitted), "more guest") + " not shown."));
 			}
+			var canWrite = WRITES && account && isId(event.eventId) && event.status !== "cancelled";
+			var mine = guests.filter(function (guest) {
+				return guest.self === true;
+			})[0];
+			var actions = [];
+			if (canWrite && mine) {
+				[["accepted", "Yes"], ["tentative", "Maybe"], ["declined", "No"]].forEach(function (choice) {
+					if (mine.responseStatus === choice[0]) return;
+					actions.push(
+						button("Reply " + choice[1], "btn", function () {
+							respond(event, args, account, choice[0], choice[1], mine.responseStatus);
+						})
+					);
+				});
+			}
+			if (canWrite && undoTo) {
+				actions.push(
+					button("Undo", "btn", function () {
+						respond(event, args, account, undoTo, "Undo", "");
+					})
+				);
+			}
+			if (canWrite) {
+				actions.push(
+					button("Edit", "btn", function () {
+						editScreen(event, args, account);
+					})
+				);
+				actions.push(
+					button("Add guests", "btn", function () {
+						guestsScreen(event, args, account);
+					})
+				);
+				actions.push(
+					button("Delete", "btn", function () {
+						App.confirm({
+							account: account,
+							action: "Delete this event",
+							target: clip(event.summary || "Untitled event", 80) + " · " + whenLine(event),
+							label: "Delete event",
+							twoClick: true,
+							danger: true,
+							usage: "write",
+							note: "No cancellation emails are sent to guests.",
+							run: function () {
+								return App.call("delete_event", eventCall(event, args, account, { notificationLevel: "NONE" }));
+							},
+							done: function () {
+								App.replaceMessage("delete_event", account, "Event deleted. No emails were sent.");
+							},
+						});
+					})
+				);
+			}
+			actions.push(linkButton("Open in Calendar", calendarLink(event.htmlLink), CALENDAR_HOSTS, "btn btn-primary"));
 			App.draw({
 				tool: tool,
 				account: account,
 				line: App.argsLine(args),
 				body: body,
-				actions: [linkButton("Open in Calendar", calendarLink(event.htmlLink), CALENDAR_HOSTS, "btn btn-primary")],
+				actions: actions,
 				note: "Event text renders as plain text.",
 			});
 		});
 	}
 
+	function isId(value) {
+		return typeof value === "string" && /^[A-Za-z0-9_-]{1,256}$/.test(value);
+	}
+	/** account + eventId (+ the calendar and time zone the card was opened with) + extra fields. */
+	function eventCall(event, args, account, extra) {
+		var call = { account: account, eventId: event.eventId };
+		if (typeof args.calendarId === "string") call.calendarId = args.calendarId;
+		Object.keys(extra || {}).forEach(function (key) {
+			call[key] = extra[key];
+		});
+		return call;
+	}
+	var REPLY_WORDS = { accepted: "Yes", tentative: "Maybe", declined: "No", needsAction: "No reply" };
+	/** Sets this account's own RSVP after a confirm, then shows the event again with Undo. */
+	function respond(event, args, account, status, word, previous, after) {
+		App.confirm({
+			account: account,
+			action: status === "needsAction" ? "Clear my reply to this invitation" : "Reply " + (REPLY_WORDS[status] || word) + " to this invitation",
+			target: clip(event.summary || "Untitled event", 80) + " · " + whenLine(event),
+			label: status === "needsAction" ? "Clear reply" : "Reply " + (REPLY_WORDS[status] || word),
+			usage: "write",
+			note: "No email is sent to the organiser.",
+			run: function () {
+				return App.call("respond_to_event", eventCall(event, args, account, { responseStatus: status, notificationLevel: "NONE" }));
+			},
+			done: function (updated) {
+				if (after) return after(updated);
+				App.replace("respond_to_event", { data: updated }, { account: account, calendarId: args.calendarId, previous: previous });
+			},
+		});
+	}
+
+	var NOTIFY_OPTIONS = [["NONE", "Don't email guests"], ["ALL", "Email everyone"], ["EXTERNAL_ONLY", "Email outside guests only"]];
+	var NOTIFY_WORDS = { NONE: "no emails are sent", ALL: "EVERY guest is emailed", EXTERNAL_ONLY: "guests outside your organisation are emailed" };
+	function notifyControl() {
+		return select(NOTIFY_OPTIONS, "NONE");
+	}
+	function clock(minutes) {
+		var hour = Math.floor(minutes / 60);
+		var minute = minutes % 60;
+		return (hour < 10 ? "0" : "") + hour + ":" + (minute < 10 ? "0" : "") + minute;
+	}
+	function validDay(value) {
+		return /^\d{4}-\d{2}-\d{2}$/.test(value);
+	}
+	function validClock(value) {
+		return /^([01]\d|2[0-3]):[0-5]\d$/.test(value);
+	}
+
+	/** The new-event form. Opened from a suggested slot or from the day view. */
+	function createScreen(prefill, account) {
+		var title = input("text", prefill.title || "");
+		var day = input("date", prefill.day || "");
+		var start = input("time", prefill.start || "09:00");
+		var end = input("time", prefill.end || "09:30");
+		var guests = input("text", (prefill.guests || []).join(", "));
+		var notify = notifyControl();
+		var calendars = [{ id: "primary", name: "Primary calendar" }];
+		var picker = el("div", "stack");
+		var chosen = 0;
+		var status = el("div", "muted");
+		function drawPicker() {
+			// Option values are positions in the list, never text from Google.
+			var options = document.createElement("select");
+			options.className = "input";
+			calendars.forEach(function (calendar, index) {
+				var option = document.createElement("option");
+				option.value = String(index);
+				option.textContent = calendar.name;
+				options.appendChild(option);
+			});
+			options.value = String(chosen);
+			options.addEventListener("change", function () {
+				chosen = Number(options.value) || 0;
+			});
+			var load =
+				calendars.length === 1
+					? button("Load my calendars", "btn", function () {
+							App.call("list_calendars", { account: account }).then(function (result) {
+								if (result.error) {
+									status.textContent = result.error;
+									return;
+								}
+								(Array.isArray(result.data.calendars) ? result.data.calendars : []).forEach(function (calendar) {
+									var writable = calendar.accessRole === "owner" || calendar.accessRole === "writer";
+									if (!calendar.primary && writable && typeof calendar.calendarId === "string") calendars.push({ id: calendar.calendarId, name: calendar.summary || "Calendar" });
+								});
+								if (calendars.length === 1) status.textContent = "No other calendar you can add events to.";
+								drawPicker();
+							});
+						})
+					: null;
+			picker.replaceChildren.apply(picker, [field("Calendar", options), load].filter(Boolean));
+		}
+		drawPicker();
+		App.go(function () {
+			App.draw({
+				tool: "create_event",
+				account: account,
+				line: "",
+				body: [
+					el("div", "form", null, field("Title", title), field("Date", day), field("Starts", start), field("Ends", end), picker, field("Guests (email addresses)", guests), field("Email guests", notify), status),
+				],
+				actions: [
+					button("Create event", "btn btn-primary", function () {
+						var name = title.value.trim();
+						if (!name || !validDay(day.value) || !validClock(start.value) || !validClock(end.value)) {
+							status.textContent = "Give a title, a date, and start and end times.";
+							return;
+						}
+						if (end.value <= start.value) {
+							status.textContent = "The end time must be after the start time.";
+							return;
+						}
+						status.textContent = "";
+						var emails = emailsIn(guests.value);
+						var level = notify.value;
+						var call = { account: account, summary: name, startTime: day.value + "T" + start.value + ":00", endTime: day.value + "T" + end.value + ":00", notificationLevel: level };
+						if (prefill.zone) call.timeZone = prefill.zone;
+						if (calendars[chosen] && calendars[chosen].id !== "primary") call.calendarId = calendars[chosen].id;
+						if (emails.length) {
+							call.attendees = emails.map(function (address) {
+								return { email: address };
+							});
+						}
+						App.confirm({
+							account: account,
+							action: "Create an event: " + (emails.length ? NOTIFY_WORDS[level] || NOTIFY_WORDS.NONE : "no guests"),
+							target: clip(name, 80) + " · " + dayLabel(day.value) + ", " + timeLabel(parts(day.value + "T" + start.value).minutes) + " to " + timeLabel(parts(day.value + "T" + end.value).minutes) + (emails.length ? " · " + emails.join(", ") : ""),
+							label: level === "NONE" || !emails.length ? "Create event" : "Create and email guests",
+							twoClick: level !== "NONE" && emails.length > 0,
+							usage: "write",
+							note: level === "ALL" ? "Everyone emails every guest on the list." : level === "EXTERNAL_ONLY" ? "Guests outside your organisation get an invitation email." : "No invitation emails are sent.",
+							run: function () {
+								return App.call("create_event", call);
+							},
+							done: function (created) {
+								App.replace("create_event", { data: created }, { account: account, calendarId: call.calendarId, timeZone: call.timeZone });
+							},
+						});
+					}),
+				],
+				note: "Everyone emails every guest. The default sends no emails. Nothing is created until you confirm.",
+			});
+		});
+	}
+
+	function editScreen(event, args, account) {
+		var from = parts(event.start);
+		var until = parts(event.end);
+		var timed = from && from.minutes !== null && until && until.minutes !== null;
+		var title = input("text", event.summary || "");
+		var place = input("text", event.location || "");
+		var day = input("date", from ? from.date : "");
+		var start = input("time", timed ? clock(from.minutes) : "");
+		var end = input("time", timed ? clock(until.minutes) : "");
+		var status = el("div", "muted");
+		App.go(function () {
+			App.draw({
+				tool: "update_event",
+				account: account,
+				line: "",
+				body: [
+					el("div", "form", null, field("Title", title), field("Place", place), timed ? field("Date", day) : null, timed ? field("Starts", start) : null, timed ? field("Ends", end) : null, timed ? null : el("div", "muted", "This is an all-day event; its dates are not changed here."), status),
+				],
+				actions: [
+					button("Save changes", "btn btn-primary", function () {
+						var changed = {};
+						var name = title.value.trim();
+						if (name && name !== (event.summary || "")) changed.summary = name;
+						if (place.value !== (event.location || "")) changed.location = place.value;
+						if (timed && (day.value !== from.date || start.value !== clock(from.minutes) || end.value !== clock(until.minutes))) {
+							if (!validDay(day.value) || !validClock(start.value) || !validClock(end.value) || end.value <= start.value) {
+								status.textContent = "Give a date, and an end time after the start time.";
+								return;
+							}
+							changed.startTime = day.value + "T" + start.value + ":00";
+							changed.endTime = day.value + "T" + end.value + ":00";
+						}
+						if (!Object.keys(changed).length) {
+							status.textContent = "Nothing has changed.";
+							return;
+						}
+						status.textContent = "";
+						changed.notificationLevel = "NONE";
+						if (typeof event.timeZone === "string" && event.timeZone) changed.timeZone = event.timeZone;
+						App.confirm({
+							account: account,
+							action: "Change this event (no emails are sent)",
+							target: clip(event.summary || "Untitled event", 80) + " · " + whenLine(event),
+							label: "Save changes",
+							usage: "write",
+							run: function () {
+								return App.call("update_event", eventCall(event, args, account, changed));
+							},
+							done: function (updated) {
+								App.replace("update_event", { data: updated }, { account: account, calendarId: args.calendarId });
+							},
+						});
+					}),
+				],
+				note: "No emails are sent to guests. Nothing changes until you confirm.",
+			});
+		});
+	}
+
+	function guestsScreen(event, args, account) {
+		var guests = input("text", "");
+		var notify = notifyControl();
+		var status = el("div", "muted");
+		App.go(function () {
+			App.draw({
+				tool: "update_event",
+				account: account,
+				line: "",
+				body: [el("div", "form", null, field("Guests to add (email addresses)", guests), field("Email guests", notify), status)],
+				actions: [
+					button("Add guests", "btn btn-primary", function () {
+						var emails = emailsIn(guests.value);
+						if (!emails.length) {
+							status.textContent = "Enter at least one email address.";
+							return;
+						}
+						status.textContent = "";
+						var level = notify.value;
+						App.confirm({
+							account: account,
+							action: "Add guests to this event: " + (NOTIFY_WORDS[level] || NOTIFY_WORDS.NONE),
+							target: clip(event.summary || "Untitled event", 80) + " · " + emails.join(", "),
+							label: level === "NONE" ? "Add guests" : "Add and email guests",
+							twoClick: level !== "NONE",
+							usage: "write",
+							note: level === "ALL" ? "Everyone emails every guest on the event, not only the new ones." : level === "EXTERNAL_ONLY" ? "Guests outside your organisation get an email." : "No emails are sent.",
+							run: function () {
+								return App.call(
+									"update_event",
+									eventCall(event, args, account, {
+										addedAttendees: emails.map(function (address) {
+											return { email: address };
+										}),
+										notificationLevel: level,
+									})
+								);
+							},
+							done: function (updated) {
+								App.replace("update_event", { data: updated }, { account: account, calendarId: args.calendarId });
+							},
+						});
+					}),
+				],
+				note: "Everyone emails every guest. The default sends no emails.",
+			});
+		});
+	}
+
 	App.view("get_event", function (parsed, args, account) {
-		eventScreen("get_event", parsed.data, args, account, "");
+		eventScreen("get_event", parsed.data, args, account, "", "");
+	});
+	App.view("create_event", function (parsed, args, account) {
+		eventScreen("create_event", parsed.data, args, account, parsed.data.attendeesEmailed ? "Event created. Guests were emailed." : "Event created. No invitation emails were sent.", "");
+	});
+	App.view("update_event", function (parsed, args, account) {
+		eventScreen("update_event", parsed.data, args, account, parsed.data.attendeesEmailed ? "Event changed. Guests were emailed." : "Event changed. No emails were sent.", "");
+	});
+	App.view("respond_to_event", function (parsed, args, account) {
+		var reply = REPLY_WORDS[parsed.data.response] || "saved";
+		// Undo goes back to the reply the card replaced; a reply the model set can be cleared.
+		var before = typeof args.previous === "string" && Object.prototype.hasOwnProperty.call(REPLY_WORDS, args.previous) ? args.previous : "needsAction";
+		eventScreen("respond_to_event", parsed.data, { calendarId: args.calendarId }, account, "Your reply: " + reply + ". No email was sent.", parsed.data.response === before ? "" : before);
 	});
 
 	App.view("search_events", function (parsed, args, account) {
@@ -456,7 +829,7 @@ export const CALENDAR_JS = String.raw`
 				account: account,
 				line: App.argsLine(args),
 				body: [slots.length ? columns : null, slots.length ? legend : null, el("div", "pad strong", summary)],
-				actions: [chosen && typeof bookSlot === "function" ? bookSlot(chosen, args, account, data.timeZone) : null],
+				actions: [chosen && bookSlot(chosen, args, account, data.timeZone)],
 				note: notes.join(" "),
 			});
 		});
@@ -490,12 +863,29 @@ export const CALENDAR_JS = String.raw`
 		});
 	}
 
-	/** Phase 3 replaces this with the button that opens the new-event form. */
-	var bookSlot = null;
+	/** The button under a chosen suggested time: opens the new-event form filled in. */
+	function bookSlot(slot, args, account, zone) {
+		if (!WRITES || !account) return null;
+		return button("Book this time", "btn btn-primary", function () {
+			var from = parts(slot.start);
+			var until = parts(slot.end);
+			createScreen(
+				{
+					day: from.date,
+					start: clock(from.minutes),
+					end: until && until.minutes !== null && until.date === from.date ? clock(until.minutes) : clock(Math.min(from.minutes + 30, 23 * 60 + 59)),
+					guests: Array.isArray(args.attendeeEmails) ? emailsIn(args.attendeeEmails.join(", ")) : [],
+					zone: zone || (typeof args.timeZone === "string" ? args.timeZone : ""),
+				},
+				account
+			);
+		});
+	}
 
 	App.start("GoBridge calendar", function (data) {
 		if (Array.isArray(data.events)) return "list_events";
 		if (Array.isArray(data.suggestions)) return "suggest_time";
+		if (typeof data.eventId === "string" && typeof data.response === "string") return "respond_to_event";
 		if (typeof data.eventId === "string") return "get_event";
 		return "";
 	});

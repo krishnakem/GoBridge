@@ -831,8 +831,10 @@ describe("allowed AI clients", () => {
 /** The ui:// resources and the tools that point at them (test bindings set UI_CARDS to "all"). */
 const CARD_URIS = ["accounts", "calendar", "drive", "mail", "workspace"].map((card) => `ui://gobridge/${card}.html`);
 const CARD_TOOLS = [
-	"get_event", "get_file_permissions", "get_thread", "get_values", "list_accounts", "list_events", "list_recent_files", "query_drive_activity",
-	"read_doc", "read_presentation", "read_slide_page_thumbnail", "search_events", "search_files", "search_threads", "suggest_time",
+	"append_values", "create_draft", "create_event", "forward", "get_draft", "get_event", "get_file_permissions", "get_thread", "get_values",
+	"list_accounts", "list_events", "list_labels", "list_recent_files", "query_drive_activity", "read_doc", "read_presentation",
+	"read_slide_page_thumbnail", "respond_to_event", "search_events", "search_files", "search_threads", "send_message", "share_file",
+	"suggest_time", "update_doc",
 ];
 
 describe("in-chat cards over /mcp", () => {
@@ -881,8 +883,10 @@ describe("in-chat cards over /mcp", () => {
 		}
 
 		const { tools } = await rpc("tools/list");
-		expect(tools).toHaveLength(72);
-		const withCard = tools.filter((t: { _meta?: unknown }) => t._meta).map((t: { name: string }) => t.name);
+		// The 72 tools plus the cards' own get_card_status, which is marked app-only.
+		expect(tools).toHaveLength(73);
+		expect(tools.find((t: { name: string }) => t.name === "get_card_status")._meta).toEqual({ ui: { visibility: ["app"] } });
+		const withCard = tools.filter((t: { _meta?: { ui?: { resourceUri?: string } } }) => t._meta?.ui?.resourceUri).map((t: { name: string }) => t.name);
 		expect(withCard.sort()).toEqual(CARD_TOOLS);
 		expect(tools.find((t: { name: string }) => t.name === "get_thread")._meta.ui.resourceUri).toBe("ui://gobridge/mail.html");
 

@@ -314,7 +314,7 @@ export const DRIVE_JS = String.raw`
 				account: account,
 				line: App.argsLine(args),
 				body: body,
-				actions: [typeof shareButton === "function" ? shareButton(data.fileId || args.fileId, account) : null],
+				actions: [shareButton(data.fileId || args.fileId, account)],
 				note: "Names and addresses render as plain text. GoBridge can share with one person or group, never with anyone or a whole domain.",
 			});
 		});
@@ -410,11 +410,115 @@ export const DRIVE_JS = String.raw`
 		});
 	});
 
-	/** Phase 3 replaces this with the button that opens the share form. */
-	var shareButton = null;
+	var SHARE_ROLES = [["reader", "Viewer"], ["commenter", "Commenter"], ["writer", "Editor"]];
+	function roleName(role) {
+		for (var i = 0; i < SHARE_ROLES.length; i++) {
+			if (SHARE_ROLES[i][0] === role) return SHARE_ROLES[i][1];
+		}
+		return "Viewer";
+	}
+
+	/** The button under a file's sharing list: opens the share form. */
+	function shareButton(fileId, account) {
+		if (!WRITES || !account || !isId(fileId)) return null;
+		return button("Share with someone", "btn btn-primary", function () {
+			shareScreen(fileId, account);
+		});
+	}
+
+	function shareScreen(fileId, account) {
+		var who = input("email", "");
+		var role = "reader";
+		var status = el("div", "muted");
+		var count = el("div", "muted", "Checking today's share count…");
+		// Asked for when the form opens, which only happens on the user's click.
+		App.status(account).then(function (result) {
+			var text = result.data && App.usageText(result.data, "share");
+			count.textContent = text ? "Shares today: " + text.replace(" shares today", "") : "Today's share count is not available.";
+		});
+		var radios = [];
+		function option(value, labelText, allowed) {
+			var radio = input("radio");
+			radio.checked = allowed && value === role;
+			radio.disabled = !allowed;
+			radio.addEventListener("change", function () {
+				role = value;
+				radios.forEach(function (other) {
+					other.checked = other === radio;
+				});
+			});
+			if (allowed) radios.push(radio);
+			return field(labelText, radio, true);
+		}
+		App.go(function () {
+			var choices = el("div", "stack", null, el("span", "field-label", "Access"));
+			SHARE_ROLES.forEach(function (entry) {
+				choices.appendChild(option(entry[0], entry[1], true));
+			});
+			choices.appendChild(option("", "Anyone with the link (not allowed in GoBridge)", false));
+			choices.appendChild(option("", "Everyone at a domain (not allowed in GoBridge)", false));
+			App.draw({
+				tool: "share_file",
+				account: account,
+				line: "",
+				body: [el("div", "form", null, field("Person or group (email address)", who), choices, el("div", "muted", "Google emails the person to tell them. This cannot be switched off here."), count, status)],
+				actions: [
+					button("Share", "btn btn-primary", function () {
+						var emails = emailsIn(who.value);
+						if (emails.length !== 1) {
+							status.textContent = "Enter one email address.";
+							return;
+						}
+						status.textContent = "";
+						App.confirm({
+							account: account,
+							action: "Share this file as " + roleName(role) + " (Google emails them)",
+							target: emails[0],
+							label: "Share",
+							twoClick: true,
+							usage: "share",
+							note: "Counts against the 10 shares allowed per account each day.",
+							run: function () {
+								return App.call("share_file", { account: account, fileId: fileId, emailAddress: emails[0], role: role });
+							},
+							done: function (shared) {
+								App.replace("share_file", { data: shared }, { account: account, fileId: fileId });
+							},
+						});
+					}),
+				],
+				note: "One person or group at a time. Never anyone with the link, never a whole domain.",
+			});
+		});
+	}
+
+	App.view("share_file", function (parsed, args, account) {
+		var data = parsed.data;
+		var fileId = data.fileId || args.fileId;
+		App.go(function () {
+			App.draw({
+				tool: "share_file",
+				account: account,
+				line: "",
+				body: [
+					el("div", "banner banner-ok", data.shared === true ? "Shared. Google emailed the recipient." : "This call did not report a share."),
+					el("div", "pad pairs", null, pair("Account", account || "this account"), pair("Shared with", data.emailAddress || "the recipient"), pair("Access", roleName(data.role)), pair("Kind", data.type === "group" ? "Group" : "Person")),
+				],
+				actions: [
+					account && isId(fileId)
+						? button("See who has access", "btn", function () {
+								App.open("get_file_permissions", { account: account, fileId: fileId });
+							})
+						: null,
+				],
+				note: "Counts as one of the 10 shares allowed per account each day.",
+			});
+		});
+	});
 
 	App.start("GoBridge Drive", function (data) {
 		if (Array.isArray(data.permissions)) return "get_file_permissions";
+		if (data.shared === true) return "share_file";
 		if (Array.isArray(data.activities)) return "query_drive_activity";
 		if (Array.isArray(data.files)) return "search_files";
 		return "";

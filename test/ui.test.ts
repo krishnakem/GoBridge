@@ -38,10 +38,12 @@ const TABLE_TAGS = [...FORM_TAGS, "table", "thead", "tbody", "tr", "th", "td", "
 const READ_CARDS: Record<string, string> = {
 	get_event: "calendar",
 	get_file_permissions: "drive",
+	get_draft: "mail",
 	get_thread: "mail",
 	get_values: "workspace",
 	list_accounts: "accounts",
 	list_events: "calendar",
+	list_labels: "mail",
 	list_recent_files: "drive",
 	query_drive_activity: "drive",
 	read_doc: "workspace",
@@ -52,7 +54,16 @@ const READ_CARDS: Record<string, string> = {
 	search_threads: "mail",
 	suggest_time: "calendar",
 };
-const WRITE_CARDS: Record<string, string> = {};
+const WRITE_CARDS: Record<string, string> = {
+	append_values: "workspace",
+	create_draft: "mail",
+	create_event: "calendar",
+	forward: "mail",
+	respond_to_event: "calendar",
+	send_message: "mail",
+	share_file: "drive",
+	update_doc: "workspace",
+};
 const metaFor = (card: string) => ({ ui: { resourceUri: `ui://gobridge/${card}.html` }, "ui/resourceUri": `ui://gobridge/${card}.html` });
 const expectedMeta = (cards: Record<string, string>) => Object.fromEntries(Object.entries(cards).map(([tool, card]) => [tool, metaFor(card)]));
 
@@ -64,25 +75,37 @@ const ALLOWED_URLS = new Set(["http://www.w3.org/2000/svg", "https://calendar.go
 
 /** Minimal valid arguments for every card-backed tool (the account alias is added by the test). */
 const CARD_TOOL_ARGS: Record<string, Record<string, unknown>> = {
+	append_values: { range: "Sheet1!A1:B2", spreadsheetId: "s1", values: [["a", "b"]] },
+	create_draft: { body: "Hello", subject: "Hi", to: ["dana@example.com"] },
+	create_event: { endTime: "2030-01-07T10:00:00", startTime: "2030-01-07T09:00:00", summary: "Planning" },
+	forward: { messageId: "m1", to: ["dana@example.com"] },
+	get_draft: { draftId: "d1" },
 	get_event: { eventId: "e1" },
 	get_file_permissions: { fileId: "f1" },
 	get_thread: { threadId: "t1" },
 	get_values: { range: "Sheet1!A1:C3", spreadsheetId: "s1" },
 	list_accounts: {},
 	list_events: { startTime: "2026-10-05T00:00:00", endTime: "2026-10-06T00:00:00" },
+	list_labels: {},
 	list_recent_files: {},
 	query_drive_activity: { itemName: "f1" },
 	read_doc: { commentsIncluded: true, documentId: "d1" },
 	read_presentation: { presentationId: "p1" },
 	read_slide_page_thumbnail: { pageId: "g1", presentationId: "p1" },
+	respond_to_event: { eventId: "e1", responseStatus: "accepted" },
 	search_events: { query: "standup" },
 	search_files: { query: "title contains 'budget'" },
 	search_threads: { query: "is:unread", view: "MINIMAL" },
+	send_message: { body: "Hello", subject: "Hi", to: ["dana@example.com"] },
+	share_file: { emailAddress: "dana@example.com", fileId: "f1", role: "reader" },
 	suggest_time: { attendeeEmails: ["dana@example.com"], endTime: "2030-01-08T17:00:00", startTime: "2030-01-07T09:00:00" },
+	update_doc: { documentId: "d1", requests: [{ insertText: { location: { index: 1 }, text: "Hi" } }] },
 };
 
 /** A stand-in Google response with hostile text in every field a card tool reads. */
 const GENERIC_GOOGLE = {
+	attendees: [{ email: "me@example.com", responseStatus: "needsAction", self: true }],
+	labels: [{ id: "Label_1", name: HOSTILE.subject, type: "user" }],
 	activities: [{ actors: [{ user: { knownUser: { isCurrentUser: true } } }], primaryActionDetail: { rename: { newTitle: HOSTILE.subject, oldTitle: "Old" } }, targets: [{ driveItem: { name: "items/f1", title: HOSTILE.file } }], timestamp: "2026-10-05T13:00:00Z" }],
 	body: { content: [{ paragraph: { elements: [{ textRun: { content: `${HOSTILE.body}\n` } }] } }] },
 	comments: [{ author: { displayName: HOSTILE.from }, content: HOSTILE.body, id: "c1" }],
@@ -116,7 +139,7 @@ describe("UI_CARDS switch", () => {
 		const registeredMeta = (value: unknown) => {
 			const registered: Record<string, any> = {};
 			registerTools({ registerTool: (name: string, config: any) => (registered[name] = config) } as any, withCards(value), () => CLIENT);
-			return Object.fromEntries(Object.entries(registered).filter(([, config]) => "_meta" in config).map(([name, config]) => [name, config._meta]));
+			return Object.fromEntries(Object.entries(registered).filter(([, config]) => config._meta?.ui?.resourceUri).map(([name, config]) => [name, config._meta]));
 		};
 		expect(registeredMeta("read")).toEqual(expectedMeta(READ_CARDS));
 		expect(registeredMeta("all")).toEqual(expectedMeta({ ...READ_CARDS, ...WRITE_CARDS }));
@@ -217,6 +240,8 @@ describe("ui:// resources", () => {
 		for (const source of CARD_SOURCES) {
 			expect(source).not.toMatch(/innerHTML|outerHTML|insertAdjacentHTML|document\.write|\beval\s*\(|new Function|setTimeout\s*\(\s*["']|setInterval|srcdoc|createContextualFragment|DOMParser|\.href\s*=|(window|document|self|top)\.location|\blocation\.(href|assign|replace|reload)|window\.open/);
 			expect(source).not.toMatch(/ui\/message|ui\/update-model-context|sampling\/|console\./);
+			// A card script can never end its own <script> element or start an HTML comment.
+			expect(source).not.toMatch(/<\/script|<!--/i);
 			// Attributes are only ever set from constants: a literal name, then a literal or a fixed icon path.
 			for (const call of source.match(/setAttribute\([^)]*\)/g) ?? []) {
 				expect(call).toMatch(/^setAttribute\("(data-theme|viewBox|class|aria-hidden|aria-label|d)", ("[^"]*"|context\.theme|label|ICON_PATHS\[name\])\)$/);

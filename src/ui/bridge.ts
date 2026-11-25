@@ -447,11 +447,31 @@ var App = (function () {
 		view(parsed, args, account);
 	}
 
+	/** get_card_status for one account: numbers and true/false only. Asked for once, then kept until a write. */
+	var statusCache = {};
+	function cardStatus(account) {
+		if (!statusCache[account]) statusCache[account] = call("get_card_status", { account: account });
+		return statusCache[account];
+	}
+	var USAGE = {
+		send: ["sendsToday", "sendsPerDay", "sends today"],
+		share: ["sharesToday", "sharesPerDay", "shares today"],
+		write: ["writesThisHour", "writesPerHour", "writes this hour"],
+	};
+	/** "3 of 25 sends today", or "" when the numbers are not there. */
+	function usageText(data, kind) {
+		var names = USAGE[kind];
+		var used = Number(data && data.usage && data.usage[names[0]]);
+		var limit = Number(data && data.limits && data.limits[names[1]]);
+		return isFinite(used) && isFinite(limit) ? used + " of " + limit + " " + names[2] : "";
+	}
+
 	/**
 	 * The confirm step every write goes through. It names the account, the
 	 * action and the target, and runs nothing until the button is pressed.
 	 * With twoClick the button must be pressed twice.
-	 * opts: { account, action, target, label, twoClick, danger, note, extra, run, done }
+	 * With usage ("send", "share" or "write") it also shows the account's current count.
+	 * opts: { account, action, target, label, twoClick, danger, note, extra, usage, run, done }
 	 */
 	function confirm(opts) {
 		if (!WRITES || !live.slot) return;
@@ -492,11 +512,19 @@ var App = (function () {
 					status.textContent = result.error;
 					return;
 				}
+				delete statusCache[opts.account];
 				close();
 				opts.done(result.data);
 			});
 		});
 		var rows = el("div", "pairs", null, pair("Account", opts.account), pair("Action", opts.action), pair("Target", opts.target));
+		var count = null;
+		if (opts.usage) {
+			count = el("div", "muted", "Checking the current count…");
+			cardStatus(opts.account).then(function (result) {
+				count.textContent = (result.data && usageText(result.data, opts.usage)) || "The current count is not available.";
+			});
+		}
 		slot.replaceChildren(
 			el(
 				"div",
@@ -505,6 +533,7 @@ var App = (function () {
 				el("div", "confirm-title", opts.twoClick ? "Confirm (two clicks)" : "Confirm"),
 				rows,
 				opts.extra || null,
+				count,
 				opts.note ? el("div", "footnote plain", opts.note) : null,
 				el("div", "confirm-actions", null, cancel, proceed),
 				status
@@ -556,7 +585,18 @@ var App = (function () {
 		call: call,
 		open: open,
 		show: show,
+		/** Shows a result in place of the current screen (a form that has done its job). */
+		replace: function (tool, parsed, args) {
+			stack.pop();
+			show(tool, parsed, args);
+		},
+		replaceMessage: function (tool, account, text) {
+			stack.pop();
+			message(tool, account, "", text);
+		},
 		confirm: confirm,
+		status: cardStatus,
+		usageText: usageText,
 		message: message,
 		start: start,
 		has: function (tool) {

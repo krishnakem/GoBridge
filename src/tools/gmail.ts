@@ -767,6 +767,7 @@ export const GMAIL_TOOLS = [
 		title: "Get a Gmail draft",
 		description: `Returns one Gmail draft with its message in the requested format. ${UNTRUSTED}`,
 		kind: "read",
+		ui: "mail",
 		schema: z.object({ account, draftId: googleId("Gmail draft id"), messageFormat: draftFormat }),
 		run: async (env, args, ctx) => {
 			const draft = await googleJson<DraftResponse>(
@@ -784,6 +785,7 @@ export const GMAIL_TOOLS = [
 		title: "List Gmail labels",
 		description: `Lists the account's Gmail labels (id, name, type, colour, visibility). ${UNTRUSTED}`,
 		kind: "read",
+		ui: "mail",
 		countKey: "labels",
 		schema: z.object({ account }),
 		run: async (env, args) => {
@@ -807,6 +809,7 @@ export const GMAIL_TOOLS = [
 		title: "Create a Gmail draft",
 		description: `Saves a Gmail draft and returns its draftId with a full preview. Nothing is sent. To reply, pass replyToMessageId: the draft is threaded with that message. Up to ${LIMITS.recipients} recipients in total and 25 MB of attachments. ${UNTRUSTED}`,
 		kind: "write",
+		ui: "mail",
 		schema: z.object({ account, ...draftFields }),
 		run: async (env, args, ctx) => {
 			assertRecipientLimit(args);
@@ -916,6 +919,7 @@ export const GMAIL_TOOLS = [
 		title: "Send an email",
 		description: `Sends an email. Either pass draftId to send an existing draft exactly as saved (preferred: the user can review it first), or pass recipients, subject and body to send directly. replyThreadId/replyToMessageId thread the message as a reply. A daily send cap applies. ${CONFIRM}`,
 		kind: "write",
+		ui: "mail",
 		destructive: true,
 		schema: z.object({
 			account,
@@ -1010,6 +1014,7 @@ export const GMAIL_TOOLS = [
 		title: "Forward an email",
 		description: `Forwards one Gmail message, with its attachments, to new recipients. forwardText is added above the forwarded content. A daily send cap applies. ${CONFIRM}`,
 		kind: "write",
+		ui: "mail",
 		destructive: true,
 		schema: z.object({
 			account,

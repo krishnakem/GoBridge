@@ -66,7 +66,7 @@
 				"FORWARD_ENABLED": "true",
 				"DRIVE_WRITE_ENABLED": "true",
 				"DRIVE_SHARE_ENABLED": "true",
-				"UI_CARDS": "read"
+				"UI_CARDS": "all"
 			},
 			"secrets": {
 				"required": [

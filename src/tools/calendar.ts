@@ -333,6 +333,7 @@ export const CALENDAR_TOOLS = [
 		title: "Create a calendar event",
 		description: `Creates a calendar event. Times are read in timeZone (default ${DEFAULT_TIME_ZONE}) unless they carry an offset; allDay uses the dates only. By default NO invitation emails are sent, even with attendees. ${CONFIRM}`,
 		kind: "write",
+		ui: "calendar",
 		schema: z.object({ account, summary: singleLine(LIMITS.headerChars).min(1), startTime: eventTime, endTime: eventTime, ...eventFields }),
 		run: async (env, args, ctx) => {
 			checkTimes(args.startTime, args.endTime, args.allDay);
@@ -424,6 +425,7 @@ export const CALENDAR_TOOLS = [
 		title: "Respond to a calendar invitation",
 		description: `Sets this account's own response (accepted, declined, tentative) on an event it is invited to, with an optional comment. By default no emails are sent. ${CONFIRM}`,
 		kind: "write",
+		ui: "calendar",
 		schema: z.object({
 			account,
 			eventId: googleId("Calendar event id"),

@@ -379,6 +379,7 @@ export const SHEETS_TOOLS = [
 		title: "Append rows after a table",
 		description: `Appends rows after the last row of the table that contains range (spreadsheets.values.append). insertDataOption INSERT_ROWS inserts new rows; OVERWRITE (default) writes into the empty rows after the table. Same valueInputOption rules as update_values. ${EXTERNAL_FORMULA_FLAG} ${FILE_WRITE_RULES} ${CONFIRM}`,
 		kind: "write",
+		ui: "workspace",
 		schema: z.object({
 			account,
 			spreadsheetId,
