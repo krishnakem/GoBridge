@@ -23,7 +23,9 @@ Personal project, shared as a reference. Not a hosted service; deploy your own c
 - Audit log (D1) of writes and minimal reads — never message bodies, queries, cell values, formulas, ranges, titles or file content; for Docs/Sheets/Slides writes it records file ids, request types with counts, cell counts and the override flags; 90-day retention.
 - All external content is wrapped in `<untrusted_content>` so the model treats it as data, not instructions.
 - Allowed AI clients: an app can sign in and use `/mcp` only when every redirect URL it registered is on the owner's list in `/settings`. Checked at `/authorize`, `/callback` and on every `/mcp` request; removing a URL cuts that app off at once. An empty list allows no app.
-- Owner pages: CSRF on every state change, strict CSP, no inline scripts.
+- Owner pages: CSRF on every state change, strict CSP, no inline scripts. Renaming an account, unlinking it and revoking an AI client each need a confirm step and are audited.
+- AI clients are shown one card per app. An app gets a known logo only when every redirect URL it registered is on that company's own hosts; a name alone proves nothing, and a well-known name on other hosts is flagged "Unverified". Revoke removes every connection of the app and its tokens.
+- Aliases are lowercase letters, digits and hyphens, and words that read like instructions (`all`, `none`, `system`, `ignore`...) are reserved, because AI models read them.
 
 Set every write tool to **require approval** in your AI client — that is the main defence against prompt injection from email or files.
 

@@ -461,7 +461,7 @@ describe("linking an account", () => {
 		expect(page).not.toContain(record.ciphertext);
 		// The account's picture sits left of its email; no name, no inline handlers.
 		expect(page).toContain(
-			`<span class="account-cell"><span class="avatar avatar-22" aria-hidden="true"><img class="avatar-img" src="${claims.picture}" alt="" width="22" height="22" referrerpolicy="no-referrer">L</span><span>${claims.email}</span></span>`,
+			`<span class="avatar avatar-32" aria-hidden="true"><img class="avatar-img" src="${claims.picture}" alt="" width="32" height="32" referrerpolicy="no-referrer">L</span>`,
 		);
 		expect(page).not.toContain("Linked Person");
 		expect(page).not.toMatch(/\son[a-z]+=/i);
@@ -483,9 +483,8 @@ describe("linking an account", () => {
 		expect(raw).not.toContain("evil.example");
 
 		const page = await (await SELF.fetch(`${BASE}/link`, { headers: { Cookie: session.cookie } })).text();
-		expect(page).toContain(
-			`<span class="avatar avatar-22" aria-hidden="true">L</span><span>${noPicture.claims.email}</span>`,
-		);
+		expect(page).toContain('<span class="avatar avatar-32" aria-hidden="true">L</span>');
+		expect(page).toContain(`<div class="card-sub">${noPicture.claims.email}</div>`);
 		expect(page).not.toContain("evil.example");
 	});
 
@@ -595,7 +594,7 @@ describe("linking an account", () => {
 describe("renaming an account", () => {
 	const counterFor = (alias: string) => env.USAGE_COUNTER.get(env.USAGE_COUNTER.idFromName(alias));
 	const rename = (session: { cookie: string; csrf: string }, alias: string, newAlias: string) =>
-		post("/link/rename", session.cookie, { alias, newAlias, csrf_token: session.csrf });
+		post("/link/rename", session.cookie, { alias, newAlias, confirm: "yes", csrf_token: session.csrf });
 	const renameAudit = async () =>
 		(await listAudit(env, 1000, "write")).filter((e) => e.tool === "rename_account");
 
@@ -656,7 +655,8 @@ describe("renaming an account", () => {
 		expect(page).toContain("Account renamed.");
 		expect(page).toContain(`<strong>${newAlias}</strong>`);
 		expect(page).not.toContain(`<strong>${alias}</strong>`);
-		const audit = await (await SELF.fetch(`${BASE}/audit`, { headers: { Cookie: session.cookie } })).text();
+		// All activity (on /settings) shows it; /audit is now a redirect there.
+		const audit = await (await SELF.fetch(`${BASE}/settings`, { headers: { Cookie: session.cookie } })).text();
 		expect(audit).toContain("<strong>rename_account</strong>");
 		expect(audit).toContain(`Renamed to: ${newAlias}`);
 	});
@@ -700,23 +700,27 @@ describe("renaming an account", () => {
 		expect((await linkAccount(session, alias)).res.status).toBe(303);
 		const before = await stored(alias);
 		const newAlias = `${alias}-stuck`;
+		// The rename limit is checked first (503 when its counter is down), then
+		// the usage carry-over (502). Either way nothing is renamed.
+		const take = () => Promise.resolve({ allowed: true, count: 1 });
 		const broken = [
-			{ idFromName: () => { throw new Error("namespace down"); } },
-			{ get: () => ({ snapshot: () => Promise.reject(new Error("read failed")), absorb: () => Promise.resolve() }), idFromName: () => ({}) },
-			{ get: () => ({ snapshot: () => Promise.resolve([]), absorb: () => Promise.reject(new Error("write failed")) }), idFromName: () => ({}) },
-			{ get: () => ({ snapshot: () => Promise.resolve("nonsense"), absorb: () => Promise.resolve() }), idFromName: () => ({}) },
-			undefined,
+			{ status: 503, USAGE_COUNTER: { idFromName: () => { throw new Error("namespace down"); } } },
+			{ status: 503, USAGE_COUNTER: { get: () => ({ take: () => Promise.reject(new Error("take failed")) }), idFromName: () => ({}) } },
+			{ status: 502, USAGE_COUNTER: { get: () => ({ take, snapshot: () => Promise.reject(new Error("read failed")), absorb: () => Promise.resolve() }), idFromName: () => ({}) } },
+			{ status: 502, USAGE_COUNTER: { get: () => ({ take, snapshot: () => Promise.resolve([]), absorb: () => Promise.reject(new Error("write failed")) }), idFromName: () => ({}) } },
+			{ status: 502, USAGE_COUNTER: { get: () => ({ take, snapshot: () => Promise.resolve("nonsense"), absorb: () => Promise.resolve() }), idFromName: () => ({}) } },
+			{ status: 503, USAGE_COUNTER: undefined },
 		];
-		for (const USAGE_COUNTER of broken) {
+		for (const { status, USAGE_COUNTER } of broken) {
 			const res = await LinkHandler.fetch(
 				new Request(`${BASE}/link/rename`, {
 					method: "POST",
 					headers: { "Content-Type": "application/x-www-form-urlencoded", Cookie: session.cookie },
-					body: new URLSearchParams({ alias, newAlias, csrf_token: session.csrf }).toString(),
+					body: new URLSearchParams({ alias, newAlias, confirm: "yes", csrf_token: session.csrf }).toString(),
 				}),
 				{ ...env, USAGE_COUNTER } as unknown as Env,
 			);
-			expect(res.status).toBe(502);
+			expect(res.status).toBe(status);
 			expect(await res.text()).toContain("nothing was renamed");
 			expect(await stored(alias)).toBe(before);
 			expect(await stored(newAlias)).toBeNull();
@@ -725,6 +729,7 @@ describe("renaming an account", () => {
 		const logs = allLogOutput();
 		expect(logs).toContain("carry_over_failed");
 		expect(logs).not.toContain("namespace down");
+		expect(logs).not.toContain("take failed");
 	});
 
 	it("refuses a collision, an unknown alias, an invalid or unchanged alias, and changes nothing", async () => {
@@ -807,7 +812,7 @@ describe("unlinking an account", () => {
 		const session = await ownerSession();
 		expect((await linkAccount(session, alias)).res.status).toBe(303);
 
-		const res = await post("/link/unlink", session.cookie, { alias, csrf_token: session.csrf });
+		const res = await post("/link/unlink", session.cookie, { alias, confirm: "yes", csrf_token: session.csrf });
 		expect(res.status).toBe(303);
 		expect(res.headers.get("Location")).toBe("/link?msg=unlinked");
 		expect(calls.revoked).toEqual([FAKE_REFRESH_TOKEN]);
@@ -823,7 +828,7 @@ describe("unlinking an account", () => {
 		const session = await ownerSession();
 		expect((await linkAccount(session, alias)).res.status).toBe(303);
 
-		const res = await post("/link/unlink", session.cookie, { alias, csrf_token: session.csrf });
+		const res = await post("/link/unlink", session.cookie, { alias, confirm: "yes", csrf_token: session.csrf });
 		expect(res.status).toBe(303);
 		expect(res.headers.get("Location")).toBe("/link?msg=unlinked_not_revoked");
 		expect(await stored(alias)).toBeNull();
@@ -847,7 +852,7 @@ describe("picture URLs stay out of the audit log", () => {
 		mockGoogle({ linkedClaims: claims });
 		const session = await ownerSession();
 		expect((await linkAccount(session, alias)).res.status).toBe(303);
-		await post("/link/rename", session.cookie, { alias, newAlias: `${alias}-audit`, csrf_token: session.csrf });
+		await post("/link/rename", session.cookie, { alias, newAlias: `${alias}-audit`, confirm: "yes", csrf_token: session.csrf });
 		const { runReadTool } = await import("../src/tools");
 		await runReadTool(env, "list_accounts", {}, AUDIT_CLIENT);
 		for (const table of ["audit_writes", "audit_reads"]) {
@@ -867,14 +872,14 @@ describe("logging", () => {
 		mockGoogle({ linkedClaims: ok.claims });
 		const session = await ownerSession();
 		const { consent } = await linkAccount(session, ok.alias);
-		await post("/link/unlink", session.cookie, { alias: ok.alias, csrf_token: session.csrf });
+		await post("/link/unlink", session.cookie, { alias: ok.alias, confirm: "yes", csrf_token: session.csrf });
 		await post("/link", session.cookie, { alias: "x", csrf_token: "forged" });
 		await linkCallback(session.cookie, "not-the-state-we-issued");
 		const renamed = fresh();
 		vi.mocked(globalThis.fetch).mockRestore();
 		mockGoogle({ linkedClaims: renamed.claims });
 		await linkAccount(session, renamed.alias);
-		await post("/link/rename", session.cookie, { alias: renamed.alias, newAlias: `${renamed.alias}-new`, csrf_token: session.csrf });
+		await post("/link/rename", session.cookie, { alias: renamed.alias, newAlias: `${renamed.alias}-new`, confirm: "yes", csrf_token: session.csrf });
 
 		vi.mocked(globalThis.fetch).mockRestore();
 		mockGoogle({ grantedScope: "openid", linkedClaims: bad.claims });

@@ -42,3 +42,6 @@ coverage/
 
 # LinkedIn post visual (TikZ source + renders) — keep local
 linkedin/
+
+# Demo video (mp4 plus the page and script that render it) — keep local
+media/

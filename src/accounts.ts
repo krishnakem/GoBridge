@@ -7,6 +7,52 @@ import { decryptSecret, encryptSecret } from "./crypto";
 /** Lowercase letters, numbers, hyphens; 1-32 chars; no leading/trailing hyphen. */
 export const ALIAS_PATTERN = /^[a-z0-9](?:[a-z0-9-]{0,30}[a-z0-9])?$/;
 
+/**
+ * Words that may not be used as a NEW alias. AI models read aliases as the
+ * `account` argument, so an alias must never read like "every account", like
+ * no account, like a role in the conversation, or like an instruction.
+ * Accounts already linked under one of these keep working: the list is checked
+ * only when an alias is created or chosen in a rename.
+ */
+export const RESERVED_ALIASES: ReadonlySet<string> = new Set([
+	// could be read as "more than one account" or "no account"
+	"all", "any", "anyone", "both", "each", "every", "everyone", "everything", "none", "nobody", "other", "others",
+	// values and placeholders
+	"null", "undefined", "nil", "true", "false", "default", "unknown", "account", "accounts", "alias",
+	// roles in a conversation, or GoBridge's own names
+	"me", "my", "self", "you", "user", "owner", "admin", "root", "system", "assistant", "developer", "tool", "gobridge",
+	// instruction-like words
+	"ignore", "override", "instructions", "prompt",
+	// used by the owner pages
+	"new", "open",
+]);
+
+export type AliasCheck = { ok: true; alias: string } | { ok: false; category: "bad_alias" | "reserved_alias"; message: string };
+
+/**
+ * Validates an alias someone wants to start using (a new link or a rename
+ * target): the strict pattern, then the reserved words. Server-side only;
+ * the form's `pattern` attribute is a convenience.
+ */
+export function checkNewAlias(input: unknown): AliasCheck {
+	if (typeof input !== "string" || !ALIAS_PATTERN.test(input)) {
+		return {
+			category: "bad_alias",
+			message:
+				"An alias must be 1-32 lowercase letters, numbers or hyphens, and cannot start or end with a hyphen.",
+			ok: false,
+		};
+	}
+	if (RESERVED_ALIASES.has(input)) {
+		return {
+			category: "reserved_alias",
+			message: "That word is reserved and cannot be used as an alias. Pick a different one.",
+			ok: false,
+		};
+	}
+	return { alias: input, ok: true };
+}
+
 const KEY_PREFIX = "account:";
 /** Marker written when Google stops accepting an account's refresh token. */
 const RELINK_PREFIX = "relink:";
@@ -99,7 +145,15 @@ export async function saveAccount(
 	await env.GOOGLE_TOKENS.delete(`${RELINK_PREFIX}${account.alias}`);
 }
 
-export type RenameOutcome = "ok" | "unknown_alias" | "alias_in_use" | "same_alias";
+export type RenameOutcome =
+	| "ok"
+	| "unknown_alias"
+	| "alias_in_use"
+	| "same_alias"
+	/** The copy under the new alias could not be read back; it was removed and nothing changed. */
+	| "verify_failed"
+	/** The new alias works, but the old record is still there. Renaming again finishes the job. */
+	| "old_not_removed";
 
 /**
  * Moves an account record from one alias to another, keeping everything in
@@ -107,9 +161,15 @@ export type RenameOutcome = "ok" | "unknown_alias" | "alias_in_use" | "same_alia
  * is bound to its alias by the encryption, so it is decrypted in memory and
  * encrypted again under the new alias; it is never logged or returned.
  *
- * Order matters: the new key is written first and the old key deleted only
- * afterwards, so a failure part-way can leave a duplicate but never a loss.
- * A pending "re-link needed" flag follows the account.
+ * KV has no transactions, so the steps are ordered to be safe at every point:
+ *   1. write the record under the new alias;
+ *   2. read it back and check that it decrypts, under the NEW alias, to the
+ *      same token (if not, remove the copy: nothing changed);
+ *   3. only then delete the old record, and move the re-link flag.
+ * A failure can leave both records (the token is never lost, and each copy
+ * decrypts only under its own alias), never neither. Calling again with the
+ * same two aliases finishes an interrupted rename: a record already under the
+ * new alias is accepted when it is the SAME Google account.
  */
 export async function renameAccount(
 	env: Env,
@@ -120,23 +180,48 @@ export async function renameAccount(
 	if (alias === newAlias) return "same_alias";
 	const record = await readRecord(env, alias);
 	if (!record) return "unknown_alias";
-	if (await env.GOOGLE_TOKENS.get(`${KEY_PREFIX}${newAlias}`)) return "alias_in_use";
 
 	const refreshToken = await decryptSecret(record, env.TOKEN_ENCRYPTION_KEY, alias);
-	const encrypted = await encryptSecret(refreshToken, env.TOKEN_ENCRYPTION_KEY, newAlias);
-	const moved: StoredAccount = {
-		...record,
-		alias: newAlias,
-		ciphertext: encrypted.ciphertext,
-		iv: encrypted.iv,
-	};
-	await env.GOOGLE_TOKENS.put(`${KEY_PREFIX}${newAlias}`, JSON.stringify(moved));
-	await env.GOOGLE_TOKENS.delete(`${KEY_PREFIX}${alias}`);
+	const occupied = await env.GOOGLE_TOKENS.get(`${KEY_PREFIX}${newAlias}`);
+	if (occupied) {
+		// Only an interrupted rename of this same account may be resumed.
+		const existing = await readRecord(env, newAlias);
+		if (!existing || existing.sub !== record.sub) return "alias_in_use";
+	} else {
+		const encrypted = await encryptSecret(refreshToken, env.TOKEN_ENCRYPTION_KEY, newAlias);
+		const moved: StoredAccount = {
+			...record,
+			alias: newAlias,
+			ciphertext: encrypted.ciphertext,
+			iv: encrypted.iv,
+		};
+		await env.GOOGLE_TOKENS.put(`${KEY_PREFIX}${newAlias}`, JSON.stringify(moved));
+	}
 
-	const flagged = await env.GOOGLE_TOKENS.get(`${RELINK_PREFIX}${alias}`);
-	if (flagged) {
-		await env.GOOGLE_TOKENS.put(`${RELINK_PREFIX}${newAlias}`, flagged);
+	// Verify before anything is deleted.
+	let verified = false;
+	try {
+		const copy = await readRecord(env, newAlias);
+		verified =
+			!!copy &&
+			copy.sub === record.sub &&
+			(await decryptSecret(copy, env.TOKEN_ENCRYPTION_KEY, newAlias)) === refreshToken;
+	} catch (_e) {
+		verified = false;
+	}
+	if (!verified) {
+		// Never remove a record that was there before this call.
+		if (!occupied) await env.GOOGLE_TOKENS.delete(`${KEY_PREFIX}${newAlias}`);
+		return occupied ? "alias_in_use" : "verify_failed";
+	}
+
+	try {
+		const flagged = await env.GOOGLE_TOKENS.get(`${RELINK_PREFIX}${alias}`);
+		if (flagged) await env.GOOGLE_TOKENS.put(`${RELINK_PREFIX}${newAlias}`, flagged);
+		await env.GOOGLE_TOKENS.delete(`${KEY_PREFIX}${alias}`);
 		await env.GOOGLE_TOKENS.delete(`${RELINK_PREFIX}${alias}`);
+	} catch (_e) {
+		return "old_not_removed";
 	}
 	return "ok";
 }

@@ -95,10 +95,14 @@ export function renderMessagePage(
 	message: string,
 	status: number,
 	extraHeaders?: Headers,
-	backTo?: "/link" | "/settings",
-	action?: { href: "/link"; label: string },
+	backTo?: "/link" | "/settings" | "/clients",
+	action?: { href: OwnerPath; label: string },
 ): Response {
-	const backLabel = backTo === "/settings" ? "Back to settings" : "Back to linked accounts";
+	const backLabel = {
+		"/clients": "Back to AI clients",
+		"/link": "Back to linked accounts",
+		"/settings": "Back to settings",
+	}[backTo ?? "/link"];
 	const back = backTo ? `\n<p><a href="${backTo}">${backLabel}</a></p>` : "";
 	const button = action
 		? `\n<p><a class="btn btn-primary" href="${action.href}">${escapeHtml(action.label)}</a></p>`
@@ -145,7 +149,7 @@ export type Attention = {
 	switchesOff?: string[];
 };
 
-export type OwnerPath = "/link" | "/audit" | "/clients" | "/settings";
+export type OwnerPath = "/link" | "/clients" | "/settings";
 
 /**
  * A round avatar: the profile picture when there is one, over the initial
@@ -164,6 +168,19 @@ export function avatarHtml(email: string, size: 22 | 32, picture?: string): stri
 const icon = (paths: string) =>
 	`<svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">${paths}</svg>`;
 
+/** Icons for the card actions on the owner pages (inline SVG, no data). */
+export const ICONS = {
+	close: icon('<path d="M6 6l12 12M18 6L6 18"/>'),
+	info: icon('<circle cx="12" cy="12" r="9"/><path d="M12 11v5M12 8h.01"/>'),
+	pencil: icon('<path d="M4 20h4L19 9l-4-4L4 16v4z"/><path d="M13.5 6.5l4 4"/>'),
+	plus: icon('<path d="M12 5v14M5 12h14"/>'),
+	trash: icon('<path d="M4 7h16M10 11v6M14 11v6M6 7l1 13h10l1-13M9 7V4h6v3"/>'),
+	/** A broken chain link. */
+	unlink: icon(
+		'<path d="M10 14a4 4 0 0 1 0-5.6l2-2a4 4 0 0 1 5.6 5.6l-.8.8"/><path d="M14 10a4 4 0 0 1 0 5.6l-2 2a4 4 0 0 1-5.6-5.6l.8-.8"/><path d="M4 4l3 3M20 20l-3-3M9 3v2M3 9h2M15 21v-2M21 15h-2"/>',
+	),
+};
+
 const NAV: { href: OwnerPath; label: string; icon: string }[] = [
 	{
 		href: "/link",
@@ -171,11 +188,6 @@ const NAV: { href: OwnerPath; label: string; icon: string }[] = [
 			'<path d="M10 13a5 5 0 0 0 7.07 0l3-3a5 5 0 0 0-7.07-7.07l-1.5 1.5"/><path d="M14 11a5 5 0 0 0-7.07 0l-3 3a5 5 0 0 0 7.07 7.07l1.5-1.5"/>',
 		),
 		label: "Linked accounts",
-	},
-	{
-		href: "/audit",
-		icon: icon('<circle cx="12" cy="12" r="9"/><path d="M12 7v5l3 2"/>'),
-		label: "Recent writes",
 	},
 	{
 		href: "/clients",
@@ -253,12 +265,19 @@ export function renderOwnerPage(options: {
 	session: { email: string; csrf: string; picture?: string; name?: string };
 	attention: Attention;
 	bodyHtml: string;
+	/**
+	 * A detail view drawn over the page (see drawerHtml). While it is shown
+	 * the page behind is `inert`: it cannot be clicked, focused or read by a
+	 * screen reader, so keyboard focus stays in the drawer without any script.
+	 */
+	overlayHtml?: string;
 }): Response {
-	const { title, active, session, attention, bodyHtml } = options;
+	const { title, active, session, attention, bodyHtml, overlayHtml } = options;
+	const inert = overlayHtml ? " inert" : "";
 	return renderDocument(
 		title,
 		"app",
-		`<div class="shell">
+		`<div class="shell"${inert}>
 <aside class="sidebar">
 <div class="brand">${BRAND_HTML}</div>
 <nav class="side-nav" aria-label="Main">
@@ -279,9 +298,9 @@ ${bodyHtml}
 </main>
 </div>
 </div>
-<nav class="tabbar" aria-label="Main">
+<nav class="tabbar" aria-label="Main"${inert}>
 ${navLinks(active, attention, false)}
-</nav>`,
+</nav>${overlayHtml ?? ""}`,
 		200,
 		undefined,
 		OWNER_PAGE_CSP,

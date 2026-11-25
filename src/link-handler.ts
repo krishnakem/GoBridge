@@ -7,11 +7,12 @@
  *   POST /link/unlink    revoke at Google + delete record (session + CSRF)
  *   POST /link/rename    move the record to a new alias    (session + CSRF)
  */
+import type { OAuthHelpers } from "@cloudflare/workers-oauth-provider";
 import { type Context, Hono } from "hono";
-import { z } from "zod";
 import {
 	type AccountInfo,
 	ALIAS_PATTERN,
+	checkNewAlias,
 	deleteAccount,
 	getAccount,
 	getRefreshToken,
@@ -19,6 +20,19 @@ import {
 	renameAccount,
 	saveAccount,
 } from "./accounts";
+import { aliasSpans, clientStats } from "./activity";
+import { type ClientGroup, loadClientDirectory } from "./client-groups";
+import { letterTileHtml } from "./client-logos";
+import {
+	drawerHtml,
+	emptyCardHtml,
+	errorCardHtml,
+	groupLogoHtml,
+	loadOrNull,
+	statusHtml,
+	timeHtml,
+	usageMetersHtml,
+} from "./components";
 import { randomToken, safeEqual, sha256Base64Url } from "./crypto";
 import {
 	buildLinkAuthorizeUrl,
@@ -28,14 +42,32 @@ import {
 	LINK_SCOPES,
 	revokeGoogleToken,
 } from "./google";
-import { carryOverUsage, recordAudit } from "./guardrails";
-import { type Attention, avatarHtml, escapeHtml, renderMessagePage, renderOwnerPage } from "./html";
+import {
+	carryOverUsage,
+	OWNER_RENAME_LIMIT_PER_HOUR,
+	recordAudit,
+	takeOwnerRename,
+	writesEnabled,
+	writeUsage,
+} from "./guardrails";
+import {
+	type Attention,
+	avatarHtml,
+	escapeHtml,
+	ICONS,
+	renderMessagePage,
+	renderOwnerPage,
+} from "./html";
 import { ownerStatus } from "./owner-status";
 import { hasValidCsrf, type OwnerSession, readOwnerSession, startOwnerLogin } from "./session";
 
 const LINK_STATE_TTL_SECONDS = 600;
 
-const aliasSchema = z.string().regex(ALIAS_PATTERN);
+/** An alias that names an account already stored: the pattern only. New aliases use checkNewAlias. */
+const existingAlias = (value: unknown) =>
+	typeof value === "string" && ALIAS_PATTERN.test(value) ? value : null;
+
+const ALIAS_INPUT = 'required maxlength="32" pattern="[a-z0-9]([a-z0-9-]{0,30}[a-z0-9])?" autocomplete="off" autocapitalize="none" spellcheck="false"';
 
 type LinkState = {
 	alias: string;
@@ -45,7 +77,7 @@ type LinkState = {
 	csrf: string;
 };
 
-type LinkContext = Context<{ Bindings: Env }>;
+type LinkContext = Context<{ Bindings: Env & { OAUTH_PROVIDER?: OAuthHelpers } }>;
 
 const NOTICES: Record<string, { text: string; warn?: boolean }> = {
 	linked: { text: "Account linked." },
@@ -57,7 +89,12 @@ const NOTICES: Record<string, { text: string; warn?: boolean }> = {
 	},
 };
 
-function denied(message: string, status: 400 | 403 | 404 | 502, category: string, route: string) {
+function denied(
+	message: string,
+	status: 400 | 403 | 404 | 429 | 500 | 502 | 503,
+	category: string,
+	route: string,
+) {
 	console.warn(`${route} denied: ${category}`);
 	return renderMessagePage("Could not continue", message, status, undefined, "/link");
 }
@@ -83,79 +120,229 @@ export async function requireOwnerPost(
 	return { form, session };
 }
 
+const plural = (count: number, word: string) => `${count} ${word}${count === 1 ? "" : "s"}`;
+
+/** One account card: photo, alias (with inline rename), email, status dot. The alias opens the detail view. */
+function accountCardHtml(account: AccountInfo, relink: boolean, csrf: string): string {
+	const alias = escapeHtml(account.alias);
+	return `<div class="card card-click${relink ? " card-alert" : ""}">
+<div class="card-head">
+${avatarHtml(account.email, 32, account.picture)}
+<div class="card-main">
+<div class="card-title" data-rename>
+<span class="rename-view" data-rename-view><a class="card-link" href="/link?open=${alias}"><strong>${alias}</strong></a>
+<a class="icon-btn reveal" href="/link?open=${alias}#rename" data-rename-open aria-label="Rename ${alias}" title="Rename">${ICONS.pencil}</a></span>
+<form class="rename-inline" method="post" action="/link/rename" hidden data-rename-form>
+<input type="hidden" name="csrf_token" value="${csrf}">
+<input type="hidden" name="alias" value="${alias}">
+<input type="text" name="newAlias" value="${alias}" ${ALIAS_INPUT} aria-label="New alias for ${alias}">
+<div class="rename-confirm" role="alert" hidden data-rename-confirm>
+<p class="small">Rename <strong>${alias}</strong> to <strong data-rename-new></strong>? AI clients must use the new alias from then on. Saved instructions that use the old alias will stop working.</p>
+<div class="actions"><button class="btn-primary" type="submit" name="confirm" value="yes">Rename</button>
+<button type="button" data-rename-cancel>Cancel</button></div>
+</div>
+</form>
+</div>
+<div class="card-sub">${escapeHtml(account.email)}</div>
+</div>
+</div>
+<div class="card-foot">${statusHtml(relink)}${
+		!relink && !hasDriveActivityScope(account.scopes)
+			? '<span class="muted small">Re-link for Drive Activity</span>'
+			: ""
+	}</div>
+</div>`;
+}
+
+/** The last card: opens the alias field that starts the existing link flow. */
+function addCardHtml(csrf: string, open: boolean): string {
+	return `<details class="card card-add disclose"${open ? " open" : ""}>
+<summary aria-label="Link a Google account"><span class="plus">${ICONS.plus}</span><span>Link a Google account</span></summary>
+<form class="field" method="post" action="/link">
+<input type="hidden" name="csrf_token" value="${csrf}">
+<input id="alias" type="text" name="alias" ${ALIAS_INPUT} aria-label="Alias for the new account" placeholder="alias, e.g. personal">
+<button class="btn-primary" type="submit">Continue to Google</button>
+</form>
+<p class="card-sub">The alias is the name AI clients use for this account. Lowercase letters, numbers and hyphens. On Google's screen, leave every permission ticked.</p>
+</details>`;
+}
+
+/**
+ * Which AI clients used this account, with last activity and write count.
+ * History follows the account across renames (src/activity.ts). A client
+ * that is no longer registered is listed by the name it was recorded under.
+ */
+async function accountClientsHtml(
+	env: LinkContext["env"],
+	session: OwnerSession,
+	account: AccountInfo,
+): Promise<string> {
+	const retry = `/link?open=${escapeHtml(account.alias)}`;
+	const spans = await loadOrNull(aliasSpans(env, account.alias));
+	const stats = spans ? await loadOrNull(clientStats(env, spans)) : null;
+	if (!spans || !stats) return errorCardHtml("this account's activity", retry);
+
+	const directory = env.OAUTH_PROVIDER
+		? await loadOrNull(loadClientDirectory(env.OAUTH_PROVIDER, session.sub))
+		: null;
+	const groupOf = new Map<string, ClientGroup>();
+	for (const group of directory?.groups ?? []) {
+		for (const client of group.clients) groupOf.set(client.clientId, group);
+	}
+
+	type Row = { group?: ClientGroup; label: string; writes: number; lastActive?: string };
+	const rows = new Map<string, Row>();
+	for (const stat of stats.values()) {
+		const group = groupOf.get(stat.clientId);
+		const key = group ? `group:${group.key}` : `gone:${stat.clientName}`;
+		const row = rows.get(key) ?? { group, label: group?.label ?? (stat.clientName || "(no name)"), writes: 0 };
+		row.writes += stat.writes;
+		if (stat.lastActive && (!row.lastActive || stat.lastActive > row.lastActive)) row.lastActive = stat.lastActive;
+		rows.set(key, row);
+	}
+	const sorted = [...rows.values()].sort((a, b) => (b.lastActive ?? "").localeCompare(a.lastActive ?? ""));
+	const former = spans.slice(1).map((span) => span.alias);
+	const formerNote = former.length
+		? `<p class="muted small">Includes activity from when this account was called ${former.map((name) => `<strong>${escapeHtml(name)}</strong>`).join(", ")}.</p>`
+		: "";
+	if (!sorted.length) {
+		return `<p class="muted">No AI client has used this account in the last 90 days.</p>${formerNote}`;
+	}
+	return `<ul class="rows">
+${sorted
+	.map(
+		(row) => `<li class="row">
+${row.group ? groupLogoHtml(row.group) : letterTileHtml(row.label)}
+<div class="row-main"><div><strong>${escapeHtml(row.label)}</strong>${row.group ? (row.group.unverified ? ' <span class="badge badge-alert">Unverified</span>' : "") : ' <span class="badge">No longer registered</span>'}</div>
+<div class="card-sub">Last active ${timeHtml(row.lastActive)} · ${plural(row.writes, "write")}</div></div>
+</li>`,
+	)
+	.join("\n")}
+</ul>${formerNote}`;
+}
+
+/** The account detail view: usage, per-client status, re-connect, rename and unlink. */
+async function accountDrawerHtml(
+	env: LinkContext["env"],
+	session: OwnerSession,
+	account: AccountInfo,
+	relink: boolean,
+): Promise<string> {
+	const alias = escapeHtml(account.alias);
+	const csrf = escapeHtml(session.csrf);
+	const [usage, clients] = await Promise.all([
+		writeUsage(env, account.alias),
+		accountClientsHtml(env, session, account),
+	]);
+	return drawerHtml({
+		bodyHtml: `<section class="drawer-section">
+<h3>Usage</h3>
+${usageMetersHtml(env, usage)}
+</section>
+<section class="drawer-section">
+<h3>AI clients</h3>
+${clients}
+</section>
+<section class="drawer-section">
+<h3>Re-connect</h3>
+<p class="muted small">Sign in to Google again for this account, keeping the alias. Use this when the account needs re-login.</p>
+<form method="post" action="/link">
+<input type="hidden" name="csrf_token" value="${csrf}">
+<input type="hidden" name="alias" value="${alias}">
+<button type="submit">Re-connect at Google</button>
+</form>
+</section>
+<section class="drawer-section" id="rename">
+<h3>Rename</h3>
+<form class="stack" method="post" action="/link/rename">
+<input type="hidden" name="csrf_token" value="${csrf}">
+<input type="hidden" name="alias" value="${alias}">
+<label for="drawer-new-alias">New alias</label>
+<input id="drawer-new-alias" type="text" name="newAlias" ${ALIAS_INPUT}>
+<label class="check"><input type="checkbox" name="confirm" value="yes" required><span>I understand that AI clients must use the new alias, and saved instructions that use <strong>${alias}</strong> will stop working.</span></label>
+<button type="submit">Rename</button>
+</form>
+<p class="muted small">Renaming keeps the account's access, picture and today's usage limits. At most ${OWNER_RENAME_LIMIT_PER_HOUR} renames an hour.</p>
+</section>
+<section class="drawer-section">
+<h3>Unlink</h3>
+<details class="disclose confirm">
+<summary class="btn btn-danger" aria-label="Unlink ${alias}">Unlink…</summary>
+<form method="post" action="/link/unlink">
+<input type="hidden" name="csrf_token" value="${csrf}">
+<input type="hidden" name="alias" value="${alias}">
+<p class="small">This revokes GoBridge's access to this Google account and removes it here. AI clients can no longer use <strong>${alias}</strong>.</p>
+<button class="btn-danger-solid" type="submit" name="confirm" value="yes">Yes, unlink ${alias}</button>
+</form>
+</details>
+</section>`,
+		closeHref: "/link",
+		leadHtml: avatarHtml(account.email, 32, account.picture),
+		subHtml: `${escapeHtml(account.email)}<br>${statusHtml(relink)} <span class="muted">· linked ${escapeHtml(account.linkedAt.slice(0, 10))}</span>`,
+		title: account.alias,
+	});
+}
+
 function renderLinkPage(
 	session: OwnerSession,
-	accounts: AccountInfo[],
+	accounts: AccountInfo[] | null,
 	attention: Attention,
-	notice?: string,
+	options: { notice?: string; overlayHtml?: string },
 ) {
 	const csrf = escapeHtml(session.csrf);
-	const note = notice && NOTICES[notice];
+	const note = options.notice && NOTICES[options.notice];
 	const noteHtml = note
 		? `<p class="${note.warn ? "warn" : "notice"}">${escapeHtml(note.text)}</p>`
 		: "";
-
-	const rows = accounts
-		.map(
-			(account) => `<tr>
-<td><strong>${escapeHtml(account.alias)}</strong></td>
-<td><span class="account-cell">${avatarHtml(account.email, 22, account.picture)}<span>${escapeHtml(account.email)}</span></span></td>
-<td>${
-				attention.relink.includes(account.alias)
-					? '<span class="badge badge-alert">Needs re-link</span>'
-					: '<span class="badge badge-ok">Linked</span>'
-			}${
-				!attention.relink.includes(account.alias) && !hasDriveActivityScope(account.scopes)
-					? '<br><span class="muted small">Re-link for Drive Activity</span>'
-					: ""
-			}</td>
-<td class="muted">${escapeHtml(account.linkedAt.slice(0, 10))}</td>
-<td><form class="inline" method="post" action="/link/rename">
-<input type="hidden" name="csrf_token" value="${csrf}">
-<input type="hidden" name="alias" value="${escapeHtml(account.alias)}">
-<input type="text" name="newAlias" required maxlength="32" pattern="[a-z0-9]([a-z0-9-]{0,30}[a-z0-9])?" autocomplete="off" aria-label="New alias for ${escapeHtml(account.alias)}" placeholder="new alias">
-<button type="submit">Rename</button>
-</form>
-<form class="inline" method="post" action="/link/unlink">
-<input type="hidden" name="csrf_token" value="${csrf}">
-<input type="hidden" name="alias" value="${escapeHtml(account.alias)}">
-<button class="btn-danger" type="submit">Unlink</button>
-</form></td>
-</tr>`,
-		)
-		.join("\n");
-
-	const table = accounts.length
-		? `<div class="table-wrap"><table>
-<tr><th>Alias</th><th>Google account</th><th>Status</th><th>Linked</th><th></th></tr>
-${rows}
-</table></div>`
-		: `<p class="muted">No accounts linked yet.</p>`;
 	const relinkHelp = attention.relink.length
-		? `<p class="warn">Needs re-link: ${escapeHtml(attention.relink.join(", "))}. Either Google no longer accepts GoBridge's access, or the account was linked before the current permissions were added. Unlink each one, then link it again with the same alias.</p>`
+		? `<p class="warn">Needs re-login: ${escapeHtml(attention.relink.join(", "))}. Either Google no longer accepts GoBridge's access, or the account was linked before the current permissions were added. Open the account and choose Re-connect.</p>`
 		: "";
+	const grid =
+		accounts === null
+			? `<div class="cards">
+${errorCardHtml("your linked accounts", "/link")}
+</div>`
+			: `<div class="cards">
+${
+	accounts.length
+		? accounts
+				.map((account) => accountCardHtml(account, attention.relink.includes(account.alias), csrf))
+				.join("\n")
+		: emptyCardHtml(
+				"No accounts linked yet",
+				'<p class="card-sub">Link a Google account to let your AI clients use its Gmail, Calendar and Drive. Pick a short alias for it, such as <code>personal</code>, then sign in to that account at Google.</p>',
+			)
+}
+${addCardHtml(csrf, accounts.length === 0)}
+</div>`;
 
 	return renderOwnerPage({
 		active: "/link",
 		attention,
 		bodyHtml: `${noteHtml}${relinkHelp}
-${table}
-<h2>Link a Google account</h2>
-<p>Pick a short alias (for example <code>personal</code>). AI clients use it to say which account to act on.</p>
-<form class="field" method="post" action="/link">
-<input type="hidden" name="csrf_token" value="${csrf}">
-<label for="alias">Alias</label>
-<input id="alias" type="text" name="alias" required maxlength="32" pattern="[a-z0-9]([a-z0-9-]{0,30}[a-z0-9])?" autocomplete="off">
-<button class="btn-primary" type="submit">Continue to Google</button>
-</form>
-<p class="muted small">Lowercase letters, numbers and hyphens only. On Google's screen, leave every permission ticked: GoBridge refuses a partial grant.</p>
-<p class="muted small">Renaming keeps the account's access, picture and today's usage limits; past audit entries keep the old alias.</p>`,
+${grid}`,
+		overlayHtml: options.overlayHtml,
 		session,
 		title: "Linked accounts",
 	});
 }
 
-const app = new Hono<{ Bindings: Env }>();
+const app = new Hono<{ Bindings: Env & { OAUTH_PROVIDER?: OAuthHelpers } }>();
+
+// A failed load never shows a blank page or a raw error.
+app.onError((_error, c) => {
+	console.error(`${c.req.method} ${c.req.routePath} error: internal`);
+	return renderMessagePage(
+		"Something went wrong",
+		c.req.method === "GET"
+			? "GoBridge could not load this page. Nothing was changed."
+			: "GoBridge hit an error. Check the page before trying again.",
+		500,
+		undefined,
+		undefined,
+		{ href: "/link", label: c.req.method === "GET" ? "Retry" : "Back to linked accounts" },
+	);
+});
 
 app.get("/link", async (c) => {
 	const session = await readOwnerSession(c.req.raw, c.env);
@@ -163,27 +350,40 @@ app.get("/link", async (c) => {
 		// No content without a session: straight to owner sign-in.
 		return startOwnerLogin(c.req.raw, c.env, "/link");
 	}
-	const { accounts, attention } = await ownerStatus(c.env);
-	return renderLinkPage(session, accounts, attention, c.req.query("msg"));
+	const status = await loadOrNull(ownerStatus(c.env));
+	if (!status) {
+		return renderLinkPage(session, null, { relink: [], writesOff: !writesEnabled(c.env) }, {});
+	}
+	const { accounts, attention } = status;
+	// ?open= must be a well-formed alias of a linked account. Anything else
+	// shows the page with no detail view: the value is never echoed.
+	const wanted = existingAlias(c.req.query("open"));
+	const open = wanted ? accounts.find((account) => account.alias === wanted) : undefined;
+	return renderLinkPage(session, accounts, attention, {
+		notice: c.req.query("msg"),
+		overlayHtml: open
+			? await accountDrawerHtml(c.env, session, open, attention.relink.includes(open.alias))
+			: undefined,
+	});
 });
 
 app.post("/link", async (c) => {
 	const gate = await requireOwnerPost(c, "POST /link");
 	if (gate instanceof Response) return gate;
 
-	const alias = aliasSchema.safeParse(gate.form.get("alias"));
-	if (!alias.success) {
-		return denied(
-			"An alias must be 1-32 lowercase letters, numbers or hyphens, and cannot start or end with a hyphen.",
-			400,
-			"bad_alias",
-			"POST /link",
-		);
-	}
+	// A new alias must pass the reserved-word check. Re-connecting an account
+	// that already has the alias only needs the alias to exist.
+	const requested = gate.form.get("alias");
+	const known = existingAlias(requested);
+	const alias =
+		known && (await getAccount(c.env, known))
+			? ({ alias: known, ok: true } as const)
+			: checkNewAlias(requested);
+	if (!alias.ok) return denied(alias.message, 400, alias.category, "POST /link");
 
 	const state = randomToken();
 	const verifier = randomToken(48);
-	const linkState: LinkState = { alias: alias.data, csrf: gate.session.csrf, verifier };
+	const linkState: LinkState = { alias: alias.alias, csrf: gate.session.csrf, verifier };
 	await c.env.OAUTH_KV.put(`link:state:${state}`, JSON.stringify(linkState), {
 		expirationTtl: LINK_STATE_TTL_SECONDS,
 	});
@@ -301,26 +501,56 @@ app.get("/link/callback", async (c) => {
 	return c.redirect("/link?msg=linked", 303);
 });
 
+/** Records an owner action on /link. A failed audit write never blocks the action. */
+async function auditOwner(
+	env: Env,
+	route: string,
+	entry: { alias: string; tool: string; outcome: string; newAlias?: string },
+) {
+	try {
+		await recordAudit(env, {
+			alias: entry.alias,
+			clientId: "owner",
+			clientName: "Owner (/link)",
+			meta: entry.newAlias ? { newAlias: entry.newAlias } : {},
+			outcome: entry.outcome,
+			tool: entry.tool,
+		});
+	} catch (_e) {
+		console.error(`${route} error: audit_failed`);
+	}
+}
+
+// Unlinking reduces access, so it is never rate limited and never waits on a
+// counter: owner session, CSRF, POST and the confirm step are its only gates.
 app.post("/link/unlink", async (c) => {
 	const route = "POST /link/unlink";
 	const gate = await requireOwnerPost(c, route);
 	if (gate instanceof Response) return gate;
 
-	const alias = aliasSchema.safeParse(gate.form.get("alias"));
-	if (!alias.success || !(await getAccount(c.env, alias.data))) {
+	const alias = existingAlias(gate.form.get("alias"));
+	if (!alias || !(await getAccount(c.env, alias))) {
 		return denied("No linked account has that alias.", 404, "unknown_alias", route);
+	}
+	if (gate.form.get("confirm") !== "yes") {
+		return denied("Unlinking needs to be confirmed. Nothing was changed.", 400, "not_confirmed", route);
 	}
 
 	let refreshToken: string | null = null;
 	try {
-		refreshToken = await getRefreshToken(c.env, alias.data);
+		refreshToken = await getRefreshToken(c.env, alias);
 	} catch (_e) {
 		refreshToken = null; // undecryptable record: still delete it below
 	}
 	const revoked = refreshToken ? await revokeGoogleToken(refreshToken) : false;
-	await deleteAccount(c.env, alias.data);
+	await deleteAccount(c.env, alias);
+	await auditOwner(c.env, route, {
+		alias,
+		outcome: revoked ? "ok" : "not_revoked",
+		tool: "unlink_account",
+	});
 
-	console.log(`${route} ok: unlinked alias=${alias.data} revoked=${revoked}`);
+	console.log(`${route} ok: unlinked alias=${alias} revoked=${revoked}`);
 	return c.redirect(`/link?msg=${revoked ? "unlinked" : "unlinked_not_revoked"}`, 303);
 });
 
@@ -329,34 +559,61 @@ app.post("/link/rename", async (c) => {
 	const gate = await requireOwnerPost(c, route);
 	if (gate instanceof Response) return gate;
 
-	const alias = aliasSchema.safeParse(gate.form.get("alias"));
-	if (!alias.success || !(await getAccount(c.env, alias.data))) {
+	const alias = existingAlias(gate.form.get("alias"));
+	const current = alias ? await getAccount(c.env, alias) : null;
+	if (!alias || !current) {
 		return denied("No linked account has that alias.", 404, "unknown_alias", route);
 	}
-	const newAlias = aliasSchema.safeParse(gate.form.get("newAlias"));
-	if (!newAlias.success) {
+	const target = checkNewAlias(gate.form.get("newAlias"));
+	if (!target.ok) return denied(target.message, 400, target.category, route);
+	const newAlias = target.alias;
+	if (newAlias === alias) {
+		return denied("That is already the account's alias. Nothing was changed.", 400, "same_alias", route);
+	}
+	if (gate.form.get("confirm") !== "yes") {
 		return denied(
-			"An alias must be 1-32 lowercase letters, numbers or hyphens, and cannot start or end with a hyphen.",
+			"Renaming needs to be confirmed, because saved instructions that use the old alias will stop working. Nothing was changed.",
 			400,
-			"bad_alias",
+			"not_confirmed",
 			route,
 		);
 	}
-	if (newAlias.data === alias.data) {
-		return denied("That is already the account's alias. Nothing was changed.", 400, "same_alias", route);
-	}
-	if (await getAccount(c.env, newAlias.data)) {
+	// In use by another Google account: refused. The same account already
+	// under the new alias is an interrupted rename, which may be finished.
+	const taken = await getAccount(c.env, newAlias);
+	if (taken && taken.sub !== current.sub) {
 		return denied(
-			`The alias "${newAlias.data}" is already in use. Nothing was changed.`,
+			`The alias "${newAlias}" is already in use. Nothing was changed.`,
 			400,
 			"alias_in_use",
 			route,
 		);
 	}
 
+	// Renames are rate limited (fail closed), unlike unlink and revoke.
+	let allowed: boolean;
+	try {
+		allowed = await takeOwnerRename(c.env);
+	} catch (_e) {
+		return denied(
+			"GoBridge could not check its rename limit, so nothing was renamed. Try again in a moment.",
+			503,
+			"counter_unavailable",
+			route,
+		);
+	}
+	if (!allowed) {
+		return denied(
+			`Rename limit reached: at most ${OWNER_RENAME_LIMIT_PER_HOUR} renames an hour. Nothing was changed. Try again later.`,
+			429,
+			"rate_limited",
+			route,
+		);
+	}
+
 	// Usage limits move first: if they cannot, the rename is refused (fail closed).
 	try {
-		await carryOverUsage(c.env, alias.data, newAlias.data);
+		await carryOverUsage(c.env, alias, newAlias);
 	} catch (_e) {
 		return denied(
 			"GoBridge could not carry the account's usage limits over to the new alias, so nothing was renamed. Try again in a moment.",
@@ -366,31 +623,37 @@ app.post("/link/rename", async (c) => {
 		);
 	}
 
-	const outcome = await renameAccount(c.env, alias.data, newAlias.data);
+	const outcome = await renameAccount(c.env, alias, newAlias);
+	if (outcome === "verify_failed") {
+		await auditOwner(c.env, route, { alias, newAlias, outcome, tool: "rename_account" });
+		return denied(
+			`GoBridge could not confirm the account under the new alias, so nothing was renamed. It still works as "${alias}". It is safe to try again.`,
+			500,
+			outcome,
+			route,
+		);
+	}
+	if (outcome === "old_not_removed") {
+		await auditOwner(c.env, route, { alias, newAlias, outcome: "partial", tool: "rename_account" });
+		return denied(
+			`The account now works as "${newAlias}", but the old alias "${alias}" could not be removed and still works too. Rename "${alias}" to "${newAlias}" again to finish; it is safe to retry.`,
+			500,
+			outcome,
+			route,
+		);
+	}
 	if (outcome !== "ok") {
 		return denied("The account could not be renamed. Nothing was changed.", 400, outcome, route);
 	}
 	// Second pass: catches a call counted on the old alias while the record moved.
 	try {
-		await carryOverUsage(c.env, alias.data, newAlias.data);
+		await carryOverUsage(c.env, alias, newAlias);
 	} catch (_e) {
 		// Already logged by carryOverUsage; the first pass carried the counts.
 	}
+	await auditOwner(c.env, route, { alias, newAlias, outcome: "ok", tool: "rename_account" });
 
-	try {
-		await recordAudit(c.env, {
-			alias: alias.data,
-			clientId: "owner",
-			clientName: "Owner (/link)",
-			meta: { newAlias: newAlias.data },
-			outcome: "ok",
-			tool: "rename_account",
-		});
-	} catch (_e) {
-		console.error(`${route} error: audit_failed`);
-	}
-
-	console.log(`${route} ok: alias=${alias.data} newAlias=${newAlias.data}`);
+	console.log(`${route} ok: alias=${alias} newAlias=${newAlias}`);
 	return c.redirect("/link?msg=renamed", 303);
 });
 

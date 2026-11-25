@@ -159,6 +159,21 @@ export async function carryOverUsage(env: Env, fromAlias: string, toAlias: strin
 	}
 }
 
+/** How many renames the owner pages accept per hour, across all accounts. */
+export const OWNER_RENAME_LIMIT_PER_HOUR = 20;
+/** Counter object for owner-page actions. Parentheses can never appear in an alias. */
+const OWNER_ACTIONS = "(owner)";
+
+/**
+ * Counts one rename on the owner pages. Returns false once the hourly limit is
+ * reached. Fails closed like every other limit: throws if the counter cannot
+ * be updated. Renames are the ONLY owner action that is limited: revoking a
+ * client and unlinking an account reduce access and must always go through.
+ */
+export async function takeOwnerRename(env: Env): Promise<boolean> {
+	return take(env, OWNER_ACTIONS, "write", OWNER_RENAME_LIMIT_PER_HOUR);
+}
+
 /** Read-only view of an account's counters, for the /settings page. Null if unavailable. */
 export async function writeUsage(
 	env: Env,
@@ -226,6 +241,15 @@ export type AuditMeta = {
 	destinationFileId?: string;
 	sheetId?: string;
 	dimension?: string;
+	/**
+	 * Owner revokes on /clients: the card's label (a known brand, or the name the
+	 * app registered with), how many registrations and connections were removed,
+	 * and how many records could not be removed.
+	 */
+	targetClient?: string;
+	clientCount?: number;
+	grantCount?: number;
+	remainingCount?: number;
 	/** Reads only: how many items came back. Never what they were. */
 	resultCount?: number;
 };
@@ -296,6 +320,10 @@ function sanitizeMeta(meta: AuditMeta): AuditMeta {
 		destinationFileId: clip(meta.destinationFileId, 256),
 		sheetId: clip(meta.sheetId, 20),
 		dimension: clip(meta.dimension, 10),
+		targetClient: clip(meta.targetClient, 100),
+		clientCount: num(meta.clientCount),
+		grantCount: num(meta.grantCount),
+		remainingCount: num(meta.remainingCount),
 	};
 }
 
@@ -347,16 +375,40 @@ export async function recordReadAudit(
 		.run();
 }
 
-type AuditRow = {
+export type AuditRow = {
 	ts: string;
 	alias: string;
 	client_id: string;
 	client_name: string;
 	tool: string;
 	outcome: string;
-	meta?: string;
+	meta?: string | null;
 	result_count?: number | null;
 };
+
+/** One stored row as an AuditEntry. A read carries only its result count. */
+export function auditEntryFrom(row: AuditRow, kind: "write" | "read"): AuditEntry {
+	let meta: AuditMeta = {};
+	if (kind === "read") {
+		if (typeof row.result_count === "number") meta = { resultCount: row.result_count };
+	} else {
+		try {
+			meta = JSON.parse(row.meta ?? "{}") as AuditMeta;
+		} catch (_e) {
+			meta = {};
+		}
+	}
+	return {
+		alias: row.alias,
+		clientId: row.client_id,
+		clientName: row.client_name,
+		kind,
+		meta,
+		outcome: row.outcome,
+		tool: row.tool,
+		ts: row.ts,
+	};
+}
 
 /** The most recent write (default) or read audit entries, newest first. */
 export async function listAudit(
@@ -370,28 +422,7 @@ export async function listAudit(
 	)
 		.bind(limit)
 		.all<AuditRow>();
-	return results.map((row) => {
-		let meta: AuditMeta = {};
-		if (kind === "read") {
-			if (typeof row.result_count === "number") meta = { resultCount: row.result_count };
-		} else {
-			try {
-				meta = JSON.parse(row.meta ?? "{}") as AuditMeta;
-			} catch (_e) {
-				meta = {};
-			}
-		}
-		return {
-			alias: row.alias,
-			clientId: row.client_id,
-			clientName: row.client_name,
-			kind,
-			meta,
-			outcome: row.outcome,
-			tool: row.tool,
-			ts: row.ts,
-		};
-	});
+	return results.map((row) => auditEntryFrom(row, kind));
 }
 
 /** Deletes audit rows older than 90 days. Run daily by the cron trigger. */
