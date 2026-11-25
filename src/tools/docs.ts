@@ -69,6 +69,7 @@ export const DOCS_TOOLS = [
 		title: "Read a Google Doc",
 		description: `Returns the JSON representation of a Google Doc (documents.get): text runs with their indexes, paragraphs, tables, lists, headers, footers and footnotes. Large documents come back in pages of structural elements: pass nextPageToken as pageToken for the rest. includeTabsContent returns each tab (flattened, with parentTabId) instead of the first tab only. commentsIncluded adds the file's comments. ${UNTRUSTED}`,
 		kind: "read",
+		ui: "workspace",
 		schema: z.object({
 			account,
 			documentId: googleId("Google Doc id (the same as the Drive file id)"),
@@ -137,6 +138,7 @@ export const DOCS_TOOLS = [
 		title: "Update a Google Doc",
 		description: `Applies documents.batchUpdate requests to a Google Doc, in order: every Docs request type (insertText, deleteContentRange, replaceAllText, tables, styles, headers, footers, tabs, suggestions...). writeControl.writeMode SUGGEST records the edits as suggestions. The comment requests (insertComment {content, quotedText?}, addCommentReply {commentId, content, resolve?}, updateCommentPost {commentId, replyId?, content}, deleteComment {commentId}, deleteCommentReply {commentId, replyId}) are applied through the Drive comments API after the batch, in order; replies[] reports each request's result in position. ${EXTERNAL_URL_FLAG} ${FILE_WRITE_RULES} ${CONFIRM}`,
 		kind: "write",
+		ui: "workspace",
 		destructive: true,
 		schema: z.object({
 			account,

@@ -16,6 +16,7 @@ export default defineConfig(async () => ({
 					FORWARD_ENABLED: "true",
 					DRIVE_WRITE_ENABLED: "true",
 					DRIVE_SHARE_ENABLED: "true",
+					UI_CARDS: "all",
 					GOOGLE_CLIENT_ID: "test-google-client-id",
 					GOOGLE_CLIENT_SECRET: "test-google-client-secret",
 					ALLOWED_EMAIL: "owner@example.com",

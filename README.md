@@ -7,6 +7,7 @@ Personal project, shared as a reference. Not a hosted service; deploy your own c
 ## What it does
 
 - 72 MCP tools matching the names and parameters of Google's own Gmail (30), Calendar (9) and Drive (11) connectors and its Docs (2), Sheets (6) and Slides (4) MCP servers, plus the Sheets API methods those servers leave out (8), one Drive Activity tool and `list_accounts`. Every tool takes an account alias.
+- Optional in-chat cards (MCP Apps) for clients that support them, switched by the `UI_CARDS` var (`off`, `read`, `all`). Cards are read-only views plus, in `all` mode, forms with an in-card confirm step; every call a card makes goes through the same limits and audit as any other tool call. Clients without card support get exactly the same text results.
 - Link any number of Google accounts on an owner-only `/link` page (rename or unlink them there too); refresh tokens are stored encrypted (AES-256-GCM).
 - Only one Google account (the owner, set in a secret) can sign in. OAuth 2.1 with PKCE S256 for AI clients.
 

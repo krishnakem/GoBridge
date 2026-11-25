@@ -81,6 +81,7 @@ export const SLIDES_TOOLS = [
 		title: "Read a Google Slides presentation",
 		description: `Returns the JSON representation of a presentation (presentations.get): title, page size, and each slide's page elements with their text. Slides come back in pages: pass nextPageToken as pageToken for the rest. Without fields, layouts and masters are summarised to their ids and names to keep the output small; pass fields (e.g. ["slides.objectId", "slides.pageElements.shape.text"]) to choose exactly what comes back. commentsIncluded adds the file's comments. ${UNTRUSTED}`,
 		kind: "read",
+		ui: "workspace",
 		schema: z.object({
 			account,
 			presentationId: googleId("Google Slides presentation id (the same as the Drive file id)"),
@@ -148,6 +149,7 @@ export const SLIDES_TOOLS = [
 		title: "Render one slide as an image",
 		description: `Renders one slide as a PNG image (presentations.pages.getThumbnail) and returns the image itself with its width and height. GoBridge fetches the image server-side from Google only; no URL is returned. Images over 5 MB are refused: ask for a smaller thumbnailSize.`,
 		kind: "read",
+		ui: "workspace",
 		schema: z.object({
 			account,
 			presentationId: googleId("Google Slides presentation id"),

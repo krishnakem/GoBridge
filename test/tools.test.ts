@@ -335,7 +335,8 @@ describe("tool list (PARITY.md)", () => {
 
 	it("annotates reads as read-only and sensitive writes as destructive, with confirm-first descriptions", () => {
 		const registered: { name: string; config: any }[] = [];
-		registerTools({ registerTool: (name: string, config: unknown) => registered.push({ config, name }) } as any, env, () => CLIENT);
+		// With in-chat cards off this is the whole surface; with cards on, get_card_status is added (test/ui-writes.test.ts).
+		registerTools({ registerTool: (name: string, config: unknown) => registered.push({ config, name }) } as any, { ...env, UI_CARDS: "off" } as Env, () => CLIENT);
 		expect(registered).toHaveLength(72);
 		for (const { name, config } of registered) {
 			const read = READ_TOOLS.some((t) => t.name === name);

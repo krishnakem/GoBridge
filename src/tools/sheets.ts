@@ -199,6 +199,7 @@ export const SHEETS_TOOLS = [
 		title: "Read a range of cells",
 		description: `Returns the values in one A1 range (spreadsheets.values.get). valueRenderOption FORMULA returns formulas instead of results; UNFORMATTED_VALUE returns raw numbers. At most ${LIMITS.cells} cells per call (truncated: true past that). ${UNTRUSTED}`,
 		kind: "read",
+		ui: "workspace",
 		schema: z.object({ account, spreadsheetId, range, valueRenderOption, dateTimeRenderOption, majorDimension }),
 		run: async (env, args) => {
 			const target = new URL(valuesUrl(args.spreadsheetId, args.range));
@@ -378,6 +379,7 @@ export const SHEETS_TOOLS = [
 		title: "Append rows after a table",
 		description: `Appends rows after the last row of the table that contains range (spreadsheets.values.append). insertDataOption INSERT_ROWS inserts new rows; OVERWRITE (default) writes into the empty rows after the table. Same valueInputOption rules as update_values. ${EXTERNAL_FORMULA_FLAG} ${FILE_WRITE_RULES} ${CONFIRM}`,
 		kind: "write",
+		ui: "workspace",
 		schema: z.object({
 			account,
 			spreadsheetId,

@@ -65,7 +65,8 @@
 				"DIRECT_SEND_ENABLED": "true",
 				"FORWARD_ENABLED": "true",
 				"DRIVE_WRITE_ENABLED": "true",
-				"DRIVE_SHARE_ENABLED": "true"
+				"DRIVE_SHARE_ENABLED": "true",
+				"UI_CARDS": "all"
 			},
 			"secrets": {
 				"required": [
@@ -105,7 +106,8 @@
 				"DIRECT_SEND_ENABLED": "true",
 				"FORWARD_ENABLED": "true",
 				"DRIVE_WRITE_ENABLED": "true",
-				"DRIVE_SHARE_ENABLED": "true"
+				"DRIVE_SHARE_ENABLED": "true",
+				"UI_CARDS": "off"
 			},
 			"secrets": {
 				"required": [

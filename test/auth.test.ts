@@ -827,3 +827,116 @@ describe("allowed AI clients", () => {
 		expect(await listAllowedRedirects(env)).toHaveLength(20);
 	});
 });
+
+/** The ui:// resources and the tools that point at them (test bindings set UI_CARDS to "all"). */
+const CARD_URIS = ["accounts", "calendar", "drive", "mail", "workspace"].map((card) => `ui://gobridge/${card}.html`);
+const CARD_TOOLS = [
+	"append_values", "create_draft", "create_event", "forward", "get_draft", "get_event", "get_file_permissions", "get_thread", "get_values",
+	"list_accounts", "list_events", "list_labels", "list_recent_files", "query_drive_activity", "read_doc", "read_presentation",
+	"read_slide_page_thumbnail", "respond_to_event", "search_events", "search_files", "search_threads", "send_message", "share_file",
+	"suggest_time", "update_doc",
+];
+
+describe("in-chat cards over /mcp", () => {
+	it("lists and serves the ui:// resources, and points the mail tools at them, only with a valid grant", async () => {
+		mockGoogle();
+		const login = await startLogin();
+		const code = new URL((await finishCallback(login)).headers.get("Location")!).searchParams.get("code")!;
+		const tokens = (await (await exchangeCode(login, code)).json()) as Record<string, string>;
+
+		const init = await mcpInitialize(tokens.access_token);
+		expect(init.status).toBe(200);
+		const sessionId = init.headers.get("Mcp-Session-Id") ?? "";
+		const { capabilities } = jsonRpcResult(await init.text());
+		expect(capabilities.resources).toBeDefined();
+
+		const rpc = async (method: string, params: unknown = {}) => {
+			const res = await SELF.fetch(`${BASE}/mcp`, {
+				method: "POST",
+				headers: {
+					Authorization: `Bearer ${tokens.access_token}`,
+					"Content-Type": "application/json",
+					Accept: "application/json, text/event-stream",
+					"Mcp-Protocol-Version": "2025-06-18",
+					...(sessionId ? { "Mcp-Session-Id": sessionId } : {}),
+				},
+				body: JSON.stringify({ jsonrpc: "2.0", id: 2, method, params }),
+			});
+			expect(res.status, method).toBe(200);
+			return jsonRpcResult(await res.text());
+		};
+
+		const { resources } = await rpc("resources/list");
+		expect(resources.map((r: { uri: string }) => r.uri).sort()).toEqual(CARD_URIS);
+		for (const resource of resources) expect(resource.mimeType).toBe("text/html;profile=mcp-app");
+
+		for (const uri of CARD_URIS) {
+			const { contents } = await rpc("resources/read", { uri });
+			expect(contents).toHaveLength(1);
+			expect(contents[0].uri).toBe(uri);
+			expect(contents[0].mimeType).toBe("text/html;profile=mcp-app");
+			expect(contents[0].text.startsWith("<!doctype html>")).toBe(true);
+			expect(contents[0].text).not.toContain("owner@example.com");
+			expect(contents[0]._meta.ui.csp).toEqual({ baseUriDomains: [], connectDomains: [], frameDomains: [], resourceDomains: [] });
+			expect(contents[0]._meta.ui.permissions).toBeUndefined();
+			expect(contents[0]._meta.ui.domain).toBeUndefined();
+		}
+
+		const { tools } = await rpc("tools/list");
+		// The 72 tools plus the cards' own get_card_status, which is marked app-only.
+		expect(tools).toHaveLength(73);
+		expect(tools.find((t: { name: string }) => t.name === "get_card_status")._meta).toEqual({ ui: { visibility: ["app"] } });
+		const withCard = tools.filter((t: { _meta?: { ui?: { resourceUri?: string } } }) => t._meta?.ui?.resourceUri).map((t: { name: string }) => t.name);
+		expect(withCard.sort()).toEqual(CARD_TOOLS);
+		expect(tools.find((t: { name: string }) => t.name === "get_thread")._meta.ui.resourceUri).toBe("ui://gobridge/mail.html");
+
+		// No grant, no card: the resource is not reachable without a token.
+		const anonymous = await SELF.fetch(`${BASE}/mcp`, {
+			method: "POST",
+			headers: { "Content-Type": "application/json", Accept: "application/json, text/event-stream" },
+			body: JSON.stringify({ jsonrpc: "2.0", id: 3, method: "resources/read", params: { uri: "ui://gobridge/mail.html" } }),
+		});
+		expect(anonymous.status).toBe(401);
+		await anonymous.body?.cancel();
+
+		// A client taken off the allowed list loses the cards with everything else.
+		expect(await removeAllowedRedirect(env, CLIENT_REDIRECT)).toBe(true);
+		const removed = await SELF.fetch(`${BASE}/mcp`, {
+			method: "POST",
+			headers: {
+				Authorization: `Bearer ${tokens.access_token}`,
+				"Content-Type": "application/json",
+				Accept: "application/json, text/event-stream",
+				...(sessionId ? { "Mcp-Session-Id": sessionId } : {}),
+			},
+			body: JSON.stringify({ jsonrpc: "2.0", id: 4, method: "resources/read", params: { uri: "ui://gobridge/mail.html" } }),
+		});
+		expect(removed.status).toBe(403);
+		await removed.body?.cancel();
+
+		// A client GoBridge no longer knows (its registration is gone) is refused
+		// too, even with the redirect URL back on the list.
+		await addAllowedRedirect(env, CLIENT_REDIRECT);
+		const clientKeys = (await env.OAUTH_KV.list({ prefix: "client:" })).keys;
+		expect(clientKeys.length).toBeGreaterThan(0);
+		for (const key of clientKeys) await env.OAUTH_KV.delete(key.name);
+		for (const method of ["resources/list", "resources/read"]) {
+			const unknown = await SELF.fetch(`${BASE}/mcp`, {
+				method: "POST",
+				headers: {
+					Authorization: `Bearer ${tokens.access_token}`,
+					"Content-Type": "application/json",
+					Accept: "application/json, text/event-stream",
+					...(sessionId ? { "Mcp-Session-Id": sessionId } : {}),
+				},
+				body: JSON.stringify({ jsonrpc: "2.0", id: 5, method, params: { uri: "ui://gobridge/mail.html" } }),
+			});
+			expect(unknown.status, method).toBe(403);
+			await unknown.body?.cancel();
+		}
+		expect(allLogOutput()).toContain("/mcp denied: client_unknown_client");
+
+		// Nothing about the card calls is logged beyond the usual lines.
+		expect(allLogOutput()).not.toContain("ui://");
+	});
+});
