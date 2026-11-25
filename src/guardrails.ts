@@ -347,16 +347,40 @@ export async function recordReadAudit(
 		.run();
 }
 
-type AuditRow = {
+export type AuditRow = {
 	ts: string;
 	alias: string;
 	client_id: string;
 	client_name: string;
 	tool: string;
 	outcome: string;
-	meta?: string;
+	meta?: string | null;
 	result_count?: number | null;
 };
+
+/** One stored row as an AuditEntry. A read carries only its result count. */
+export function auditEntryFrom(row: AuditRow, kind: "write" | "read"): AuditEntry {
+	let meta: AuditMeta = {};
+	if (kind === "read") {
+		if (typeof row.result_count === "number") meta = { resultCount: row.result_count };
+	} else {
+		try {
+			meta = JSON.parse(row.meta ?? "{}") as AuditMeta;
+		} catch (_e) {
+			meta = {};
+		}
+	}
+	return {
+		alias: row.alias,
+		clientId: row.client_id,
+		clientName: row.client_name,
+		kind,
+		meta,
+		outcome: row.outcome,
+		tool: row.tool,
+		ts: row.ts,
+	};
+}
 
 /** The most recent write (default) or read audit entries, newest first. */
 export async function listAudit(
@@ -370,28 +394,7 @@ export async function listAudit(
 	)
 		.bind(limit)
 		.all<AuditRow>();
-	return results.map((row) => {
-		let meta: AuditMeta = {};
-		if (kind === "read") {
-			if (typeof row.result_count === "number") meta = { resultCount: row.result_count };
-		} else {
-			try {
-				meta = JSON.parse(row.meta ?? "{}") as AuditMeta;
-			} catch (_e) {
-				meta = {};
-			}
-		}
-		return {
-			alias: row.alias,
-			clientId: row.client_id,
-			clientName: row.client_name,
-			kind,
-			meta,
-			outcome: row.outcome,
-			tool: row.tool,
-			ts: row.ts,
-		};
-	});
+	return results.map((row) => auditEntryFrom(row, kind));
 }
 
 /** Deletes audit rows older than 90 days. Run daily by the cron trigger. */
