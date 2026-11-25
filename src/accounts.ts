@@ -7,6 +7,52 @@ import { decryptSecret, encryptSecret } from "./crypto";
 /** Lowercase letters, numbers, hyphens; 1-32 chars; no leading/trailing hyphen. */
 export const ALIAS_PATTERN = /^[a-z0-9](?:[a-z0-9-]{0,30}[a-z0-9])?$/;
 
+/**
+ * Words that may not be used as a NEW alias. AI models read aliases as the
+ * `account` argument, so an alias must never read like "every account", like
+ * no account, like a role in the conversation, or like an instruction.
+ * Accounts already linked under one of these keep working: the list is checked
+ * only when an alias is created or chosen in a rename.
+ */
+export const RESERVED_ALIASES: ReadonlySet<string> = new Set([
+	// could be read as "more than one account" or "no account"
+	"all", "any", "anyone", "both", "each", "every", "everyone", "everything", "none", "nobody", "other", "others",
+	// values and placeholders
+	"null", "undefined", "nil", "true", "false", "default", "unknown", "account", "accounts", "alias",
+	// roles in a conversation, or GoBridge's own names
+	"me", "my", "self", "you", "user", "owner", "admin", "root", "system", "assistant", "developer", "tool", "gobridge",
+	// instruction-like words
+	"ignore", "override", "instructions", "prompt",
+	// used by the owner pages
+	"new", "open",
+]);
+
+export type AliasCheck = { ok: true; alias: string } | { ok: false; category: "bad_alias" | "reserved_alias"; message: string };
+
+/**
+ * Validates an alias someone wants to start using (a new link or a rename
+ * target): the strict pattern, then the reserved words. Server-side only;
+ * the form's `pattern` attribute is a convenience.
+ */
+export function checkNewAlias(input: unknown): AliasCheck {
+	if (typeof input !== "string" || !ALIAS_PATTERN.test(input)) {
+		return {
+			category: "bad_alias",
+			message:
+				"An alias must be 1-32 lowercase letters, numbers or hyphens, and cannot start or end with a hyphen.",
+			ok: false,
+		};
+	}
+	if (RESERVED_ALIASES.has(input)) {
+		return {
+			category: "reserved_alias",
+			message: "That word is reserved and cannot be used as an alias. Pick a different one.",
+			ok: false,
+		};
+	}
+	return { alias: input, ok: true };
+}
+
 const KEY_PREFIX = "account:";
 /** Marker written when Google stops accepting an account's refresh token. */
 const RELINK_PREFIX = "relink:";
