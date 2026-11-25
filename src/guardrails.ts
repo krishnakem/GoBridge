@@ -241,6 +241,15 @@ export type AuditMeta = {
 	destinationFileId?: string;
 	sheetId?: string;
 	dimension?: string;
+	/**
+	 * Owner revokes on /clients: the card's label (a known brand, or the name the
+	 * app registered with), how many registrations and connections were removed,
+	 * and how many records could not be removed.
+	 */
+	targetClient?: string;
+	clientCount?: number;
+	grantCount?: number;
+	remainingCount?: number;
 	/** Reads only: how many items came back. Never what they were. */
 	resultCount?: number;
 };
@@ -311,6 +320,10 @@ function sanitizeMeta(meta: AuditMeta): AuditMeta {
 		destinationFileId: clip(meta.destinationFileId, 256),
 		sheetId: clip(meta.sheetId, 20),
 		dimension: clip(meta.dimension, 10),
+		targetClient: clip(meta.targetClient, 100),
+		clientCount: num(meta.clientCount),
+		grantCount: num(meta.grantCount),
+		remainingCount: num(meta.remainingCount),
 	};
 }
 
