@@ -9,44 +9,52 @@
  */
 
 export const CALENDAR_CSS = String.raw`
-.day-nav { display: flex; align-items: center; justify-content: space-between; gap: 8px; padding: 10px 16px; }
-.allday { display: flex; flex-wrap: wrap; gap: 6px; padding: 0 16px 8px; }
-.timeline { position: relative; height: 400px; margin: 4px 16px 12px 64px; border-top: 1px solid var(--line); }
-.hour { position: absolute; left: -56px; right: 0; border-top: 1px solid var(--line); height: 0; }
-.hour-label { position: absolute; top: -9px; left: 0; width: 50px; text-align: right; color: var(--muted); font-size: 11px; font-variant-numeric: tabular-nums; }
+.day-nav { display: flex; align-items: center; justify-content: space-between; gap: 6px; padding: 8px 12px; }
+.day-nav .btn-icon { border-color: transparent; }
+.day-nav .stack { align-items: center; text-align: center; }
+.allday { display: flex; flex-wrap: wrap; gap: 4px; padding: 0 12px 6px; }
+.timeline { position: relative; height: 264px; margin: 6px 12px 10px 52px; border-top: 1px solid var(--line); }
+.hour { position: absolute; left: -46px; right: 0; border-top: 1px solid var(--line); height: 0; }
+.hour-label { position: absolute; top: -7px; left: 0; width: 40px; text-align: right; color: var(--muted); font-size: 10px; font-variant-numeric: tabular-nums; }
 .ev {
 	all: unset;
 	box-sizing: border-box;
 	position: absolute;
 	overflow: hidden;
-	border-radius: 8px;
-	padding: 3px 8px;
-	font-size: 12px;
+	border-radius: 6px;
+	padding: 2px 6px;
+	font-size: 11px;
 	font-weight: 600;
+	line-height: 1.3;
+	color: var(--fg);
+	background: var(--bg-hover);
 	border: 1px solid var(--bg);
 	cursor: pointer;
 }
+.ev:hover { background: var(--line); }
 .ev:disabled { cursor: default; }
-.ev-time { font-weight: 400; }
-.ev-conflict { border: 2px solid var(--warn-fg); }
-.ev-pill { position: static; display: inline-block; }
+.ev-time { font-weight: 400; color: var(--muted); }
+.ev-conflict { box-shadow: inset 0 0 0 1px var(--fg); }
+.ev-pill { position: static; display: inline-block; max-width: 100%; white-space: nowrap; text-overflow: ellipsis; }
 .outside { display: flex; flex-direction: column; }
-.invite-clash { background: var(--warn-bg); color: var(--warn-fg); }
+.invite-clash { background: var(--bg-soft); }
 .line { flex-wrap: wrap; }
-.guest { display: flex; align-items: center; gap: 8px; padding: 6px 16px; border-bottom: 1px solid var(--line); }
-.group { padding: 10px 16px 4px; font-size: 12px; font-weight: 600; color: var(--muted); text-transform: uppercase; letter-spacing: 0.04em; }
-.event-row { flex-direction: row; align-items: center; gap: 12px; }
-.date-block { flex: none; width: 44px; text-align: center; border: 1px solid var(--line); border-radius: 8px; padding: 2px 0; background: var(--bg-soft); }
-.date-month { font-size: 11px; font-weight: 600; color: var(--muted); text-transform: uppercase; }
-.date-day { font-size: 16px; font-weight: 600; font-variant-numeric: tabular-nums; }
-.slot-days { display: flex; gap: 12px; padding: 12px 16px; overflow-x: auto; }
-.slot-day { display: flex; flex-direction: column; gap: 6px; min-width: 132px; }
+.line .btn { min-height: 26px; }
+.guest { display: flex; align-items: center; gap: 6px; min-width: 0; padding: 4px 12px; border-bottom: 1px solid var(--line); font-size: 12px; }
+.guest:last-of-type { border-bottom: 0; }
+.group { padding: 8px 12px 2px; font-size: 11px; font-weight: 600; color: var(--muted); }
+.event-row { flex-direction: row; align-items: center; gap: 10px; }
+.date-block { flex: none; width: 36px; text-align: center; border: 1px solid var(--line); border-radius: 8px; padding: 1px 0; background: var(--bg); }
+.date-month { font-size: 9px; font-weight: 600; color: var(--muted); text-transform: uppercase; letter-spacing: 0.04em; }
+.date-day { font-size: 14px; font-weight: 600; line-height: 1.15; font-variant-numeric: tabular-nums; }
+.slot-days { display: flex; gap: 10px; padding: 10px 12px; overflow-x: auto; }
+.slot-day { display: flex; flex-direction: column; gap: 4px; min-width: 120px; }
 .slot { justify-content: flex-start; font-variant-numeric: tabular-nums; }
-.slot-best { border-color: var(--accent); border-width: 2px; }
-.slot-on { background: var(--read-bg); color: var(--read-fg); border-color: var(--read-fg); }
-.legend { display: flex; flex-wrap: wrap; gap: 12px; padding: 0 16px 12px; font-size: 12px; color: var(--muted); }
-.key { display: inline-block; width: 12px; height: 12px; border-radius: 3px; border: 1px solid var(--line); vertical-align: -2px; margin-right: 4px; }
-.key-best { border: 2px solid var(--accent); }
+.slot-best { border-color: var(--fg); }
+.slot-on, .slot-on:hover { background: var(--fg); color: var(--bg); border-color: var(--fg); }
+.legend { display: flex; flex-wrap: wrap; gap: 10px; padding: 0 12px 10px; font-size: 11px; color: var(--muted); }
+.key { display: inline-block; width: 10px; height: 10px; border-radius: 3px; border: 1px solid var(--line); vertical-align: -1px; margin-right: 4px; }
+.key-best { border-color: var(--fg); }
 `;
 
 export const CALENDAR_JS = String.raw`
@@ -242,7 +250,7 @@ export const CALENDAR_JS = String.raw`
 				block.appendChild(el("div", "clip", slot.entry.event.summary || "Busy"));
 				block.appendChild(el("div", "ev-time clip", range(slot.entry.event) + (slot.conflict ? " · Overlaps" : "")));
 				block.style.setProperty("top", ((from - DAY_START) / (DAY_END - DAY_START)) * 100 + "%");
-				block.style.setProperty("height", Math.max(((to - from) / (DAY_END - DAY_START)) * 100, 6) + "%");
+				block.style.setProperty("height", Math.max(((to - from) / (DAY_END - DAY_START)) * 100, 8) + "%");
 				block.style.setProperty("left", (slot.lane / lanes) * 100 + "%");
 				block.style.setProperty("width", 100 / lanes + "%");
 				if (!App.has("get_event")) block.disabled = true;
@@ -252,7 +260,7 @@ export const CALENDAR_JS = String.raw`
 			var later = el("div", "outside");
 			outside.forEach(function (slot) {
 				later.appendChild(
-					el("div", "line", null, el("span", "muted", range(slot.entry.event)), el("span", "grow clip", slot.entry.event.summary || "Busy"), accountChip(slot.entry.account))
+					el("div", "line", null, el("span", "muted nowrap", range(slot.entry.event)), el("span", "grow clip", slot.entry.event.summary || "Busy"), state.others && state.others.length ? accountChip(slot.entry.account) : null)
 				);
 			});
 			var notes = [];
@@ -277,7 +285,7 @@ export const CALENDAR_JS = String.raw`
 					var clash = timed.some(function (slot) {
 						return slot.entry === entry && slot.conflict;
 					});
-					var row = el("div", "line", null, el("span", "stack grow", null, el("span", "strong clip", entry.event.summary || "Untitled event"), el("span", "muted", range(entry.event) + (clash ? " · Overlaps another event" : ""))), accountChip(entry.account));
+					var row = el("div", "line", null, el("span", "stack grow", null, el("span", "strong clip", entry.event.summary || "Untitled event"), el("span", "muted clip", range(entry.event) + (clash ? " · Overlaps another event" : ""))), accountChip(entry.account));
 					var eventArgs = entry.account === account && typeof args.calendarId === "string" ? { calendarId: args.calendarId } : {};
 					var answer = function (status, word) {
 						respond(entry.event, eventArgs, entry.account, status, word, "", function () {
@@ -334,7 +342,7 @@ export const CALENDAR_JS = String.raw`
 		});
 	});
 
-	var RSVP = { accepted: ["Yes", "tag good"], declined: ["No", "tag bad"], tentative: ["Maybe", "tag tag-warn"], needsAction: ["No reply", "tag"] };
+	var RSVP = { accepted: ["Yes", "tag"], declined: ["No", "tag"], tentative: ["Maybe", "tag"], needsAction: ["No reply", "tag"] };
 	function rsvpTag(status) {
 		var known = Object.prototype.hasOwnProperty.call(RSVP, status) ? RSVP[status] : ["Unknown", "tag"];
 		return el("span", known[1], known[0]);
@@ -348,11 +356,17 @@ export const CALENDAR_JS = String.raw`
 	function eventScreen(tool, event, args, account, banner, undoTo) {
 		App.go(function () {
 			var guests = Array.isArray(event.attendees) ? event.attendees : [];
-			var top = el("div", "pad stack", null, el("div", "title", event.summary || "Untitled event"), el("div", null, whenLine(event)));
-			if (event.location) top.appendChild(el("div", "muted", event.location));
-			if (event.status === "cancelled") top.appendChild(el("span", "tag tag-warn", "Cancelled"));
+			// At most five rows: title, when, where, and two lines of description.
+			var top = el(
+				"div",
+				"pad stack",
+				null,
+				el("div", "row", null, el("span", "title clip", event.summary || "Untitled event"), event.status === "cancelled" ? el("span", "tag", "Cancelled") : null),
+				el("div", "clip", whenLine(event))
+			);
+			if (event.location) top.appendChild(el("div", "muted clip", event.location));
+			if (event.description) top.appendChild(el("div", "muted", null, moreText(event.description, 2)));
 			var body = [banner ? el("div", "banner banner-ok", banner) : null, top];
-			if (event.description) body.push(el("div", "pad", null, el("pre", "text", event.description)));
 			if (guests.length) {
 				body.push(el("div", "group", plural(guests.length, "guest")));
 				guests.forEach(function (guest) {
@@ -763,8 +777,7 @@ export const CALENDAR_JS = String.raw`
 					row.appendChild(
 						el("span", "stack grow", null, el("span", "strong clip", event.summary || "Untitled event"), el("span", "muted clip", [range(event), event.location].filter(Boolean).join(" · ")))
 					);
-					if (account) row.appendChild(accountChip(account));
-					else row.disabled = true;
+					if (!account) row.disabled = true;
 					body.push(row);
 				});
 			});

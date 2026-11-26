@@ -9,28 +9,25 @@
  */
 
 export const DRIVE_CSS = String.raw`
-.crumbs { display: flex; flex-wrap: wrap; align-items: center; gap: 4px; padding: 10px 16px 0; font-size: 13px; }
-.crumb { all: unset; cursor: pointer; font-weight: 600; min-height: 24px; }
-.crumb:disabled { cursor: default; color: var(--muted); }
-.search { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; padding: 10px 16px; border-bottom: 1px solid var(--line); }
-.search .input { flex: 1; min-width: 140px; width: auto; }
-.file-row { flex-direction: row; align-items: center; gap: 10px; }
-.type { flex: none; width: 40px; text-align: center; border-radius: 6px; padding: 2px 0; font-size: 11px; font-weight: 700; background: var(--other-bg); color: var(--other-fg); }
-.type-dir { background: var(--other-bg); color: var(--other-fg); }
-.type-doc { background: var(--indigo-bg); color: var(--indigo-fg); }
-.type-xls { background: var(--read-bg); color: var(--read-fg); }
-.type-ppt { background: var(--write-bg); color: var(--write-fg); }
-.type-pdf { background: var(--purple-bg); color: var(--purple-fg); }
-.type-md { background: var(--teal-bg); color: var(--teal-fg); }
-.grid3 { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 10px; padding: 12px 16px; }
-.file-tile { all: unset; box-sizing: border-box; display: flex; flex-direction: column; border: 1px solid var(--line); border-radius: 10px; overflow: hidden; cursor: pointer; min-width: 0; }
-.tile-block { display: flex; align-items: center; justify-content: center; height: 56px; width: auto; border-radius: 0; font-size: 13px; }
-.tile-text { display: flex; flex-direction: column; gap: 4px; padding: 8px; min-width: 0; }
-.person { display: flex; align-items: center; gap: 8px; padding: 6px 16px; border-bottom: 1px solid var(--line); }
-.steps { display: flex; flex-direction: column; padding: 12px 16px; }
-.step { position: relative; padding: 0 0 14px 18px; border-left: 2px solid var(--line); }
+.crumbs { display: flex; flex-wrap: wrap; align-items: center; gap: 4px; padding: 8px 12px 0; font-size: 12px; }
+.crumb { all: unset; cursor: pointer; font-weight: 600; min-height: 22px; color: var(--accent-hover); }
+.crumb:disabled { cursor: default; color: var(--fg); }
+.search { display: flex; flex-wrap: wrap; align-items: flex-end; gap: 6px; padding: 8px 12px; border-bottom: 1px solid var(--line); }
+.search > .field:first-child { flex: 1; min-width: 140px; }
+.file-row { flex-direction: row; align-items: center; gap: 8px; }
+.type { flex: none; width: 34px; text-align: center; border-radius: 5px; padding: 1px 0; font-size: 9px; font-weight: 700; letter-spacing: 0.03em; color: var(--muted); background: var(--bg); border: 1px solid var(--line); }
+.grid3 { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 8px; padding: 10px 12px; }
+.file-tile { all: unset; box-sizing: border-box; display: flex; flex-direction: column; border: 1px solid var(--line); border-radius: 8px; overflow: hidden; cursor: pointer; min-width: 0; }
+.file-tile:hover { border-color: var(--line-strong); }
+.tile-block { display: flex; align-items: center; justify-content: center; height: 36px; width: auto; border: 0; border-bottom: 1px solid var(--line); border-radius: 0; font-size: 11px; background: var(--bg-soft); }
+.tile-text { display: flex; flex-direction: column; gap: 2px; padding: 6px 8px; min-width: 0; }
+.tile-text .chip { align-self: flex-start; }
+.person { display: flex; align-items: center; gap: 6px; min-width: 0; padding: 5px 12px; border-bottom: 1px solid var(--line); font-size: 12px; }
+.steps { display: flex; flex-direction: column; padding: 10px 12px 4px; }
+.step { position: relative; min-width: 0; padding: 0 0 10px 16px; border-left: 1px solid var(--line); }
 .step:last-child { border-left-color: transparent; }
-.dot { position: absolute; left: -6px; top: 4px; width: 10px; height: 10px; border-radius: 50%; background: var(--accent); }
+.dot { position: absolute; left: -4px; top: 5px; width: 7px; height: 7px; border-radius: 50%; background: var(--muted); }
+.group { padding: 8px 12px 2px; font-size: 11px; font-weight: 600; color: var(--muted); }
 @media (max-width: 420px) { .grid3 { grid-template-columns: repeat(2, minmax(0, 1fr)); } }
 `;
 
@@ -76,16 +73,16 @@ export const DRIVE_JS = String.raw`
 	/** One file: what it is, and the read-only views GoBridge has for it. */
 	function fileScreen(file, account, tool) {
 		App.go(function () {
-			var facts = el("div", "pad pairs", null, pair("Type", typeOf(file)[1]), pair("Modified", formatDate(file.modifiedTime)));
+			// At most five rows: the name, then type and size, modified, owner, edited by.
+			var size = formatSize(file.size);
+			var facts = el("div", "pairs", null, pair("Type", typeOf(file)[1] + (size ? " · " + size : "")), pair("Modified", formatDate(file.modifiedTime)));
 			if (Array.isArray(file.owners) && file.owners.length) facts.appendChild(pair("Owner", file.owners.join(", ")));
 			if (file.lastModifiedBy) facts.appendChild(pair("Edited by", file.lastModifiedBy));
-			var size = formatSize(file.size);
-			if (size) facts.appendChild(pair("Size", size));
 			App.draw({
 				tool: tool,
 				account: account,
 				line: "file: " + typeOf(file)[1],
-				body: [el("div", "pad stack", null, el("div", "title", file.name || "Untitled"), file.shared ? el("span", "tag", "Shared") : null), facts],
+				body: [el("div", "pad stack", null, el("div", "row", null, el("span", "title clip", file.name || "Untitled"), file.shared ? el("span", "tag", "Shared") : null), facts)],
 				actions: [
 					isId(file.id) && account
 						? button("Who has access", "btn", function () {
@@ -196,8 +193,7 @@ export const DRIVE_JS = String.raw`
 				});
 				row.appendChild(typeBadge(file));
 				row.appendChild(el("span", "grow clip", file.name || "Untitled"));
-				row.appendChild(el("span", "muted", formatDate(file.modifiedTime)));
-				if (account) row.appendChild(accountChip(account));
+				row.appendChild(el("span", "muted nowrap", formatDate(file.modifiedTime)));
 				return row;
 			});
 			if (!state.files.length) rows.push(el("p", "note", "No files found."));
@@ -242,7 +238,7 @@ export const DRIVE_JS = String.raw`
 				});
 				tile.appendChild(typeBadge(file, "tile-block"));
 				tile.appendChild(
-					el("span", "tile-text", null, el("span", "strong clip", file.name || "Untitled"), el("span", "muted", formatDate(file.modifiedTime)), account ? accountChip(account) : null)
+					el("span", "tile-text", null, el("span", "strong clip", file.name || "Untitled"), el("span", "muted clip", formatDate(file.modifiedTime)))
 				);
 				grid.appendChild(tile);
 			});
@@ -393,9 +389,9 @@ export const DRIVE_JS = String.raw`
 						"step",
 						null,
 						el("span", "dot"),
-						el("div", "strong", line.what),
-						el("div", "muted", line.who + " · " + formatDate(when)),
-						line.detail ? el("div", "muted", line.detail) : null
+						el("div", "strong clip", line.what),
+						el("div", "muted clip", line.who + " · " + formatDate(when)),
+						line.detail ? el("div", "muted clip", line.detail) : null
 					)
 				);
 			});

@@ -50,6 +50,8 @@ import {
 	groupAllowed,
 	groupBadgesHtml,
 	groupLogoHtml,
+	addClientDialogHtml,
+	csvFootHtml,
 	listFootHtml,
 	loadAccountClientRows,
 	loadGroupActivity,
@@ -205,6 +207,28 @@ function redirectCell(uris: readonly string[], allowed: string[] | null): string
 		.join("\n");
 }
 
+/**
+ * Previous / next arrows and "1 of N" for a list shown one item at a time.
+ * The server renders the first item and the arrows; /static/menu.js moves
+ * between items (also with the left and right arrow keys).
+ */
+function pagerHtml(total: number): string {
+	return `<div class="pager">
+<button type="button" class="icon-btn" aria-label="Previous registration" title="Previous" data-page-prev disabled>${ICONS.chevronLeft}</button>
+<span class="pager-count muted small" aria-live="polite" data-page-count>1 of ${total}</span>
+<button type="button" class="icon-btn" aria-label="Next registration" title="Next" data-page-next>${ICONS.chevronRight}</button>
+</div>`;
+}
+
+/** GoBridge's MCP endpoint: the configured origin (BASE_URL) plus /mcp. */
+function mcpUrl(env: Env): string {
+	try {
+		return `${new URL(String(env.BASE_URL)).origin}/mcp`;
+	} catch (_e) {
+		return "/mcp";
+	}
+}
+
 /** AI clients' writes by one app: what its detail view lists and its CSV exports. */
 const clientWrites = (group: ClientGroup): ActivityOptions => ({
 	clientIds: group.clients.map((client) => client.clientId),
@@ -234,11 +258,18 @@ ${writes[0].map((entry) => `<li class="row"><div class="row-main">${writeLineHtm
 						: '<p class="muted">No writes in the last 90 days.</p>'
 				}
 ${listFootHtml(exportHref("client-writes", { client: group.key }), writes[1])}`;
-	const connections = group.clients
-		.slice(0, ROW_LIMIT)
-		.map((client) => {
-			const grants = group.grants.filter((grant) => grant.clientId === client.clientId);
-			return `<li><dl class="info-panel">
+	// One registration at a time (menu.js pages through them with the arrows
+	// and the arrow keys): connected ones first, then the newest.
+	const grantsOf = (clientId: string) => group.grants.filter((grant) => grant.clientId === clientId);
+	const ordered = [...group.clients].sort(
+		(a, b) =>
+			Number(grantsOf(b.clientId).length > 0) - Number(grantsOf(a.clientId).length > 0) ||
+			(b.registrationDate ?? 0) - (a.registrationDate ?? 0),
+	);
+	const connections = ordered
+		.map((client, index) => {
+			const grants = grantsOf(client.clientId);
+			return `<li data-page${index ? " hidden" : ""}><dl class="info-panel">
 <div><dt>Registered as</dt><dd>${escapeHtml(client.clientName || "(no name)")}</dd></div>
 <div><dt>Client ID</dt><dd class="mono">${escapeHtml(client.clientId)}</dd></div>
 <div><dt>Registered</dt><dd>${escapeHtml(day(client.registrationDate)) || "unknown"}</dd></div>
@@ -256,12 +287,15 @@ ${listFootHtml(exportHref("client-writes", { client: group.key }), writes[1])}`;
 <h3>Recent writes</h3>
 ${writesHtml}
 </section>
-<section class="modal-section">
+<section class="modal-section" data-pager>
+<div class="section-head">
 <h3>${plural(group.clients.length, "connection")}</h3>
+${ordered.length > 1 ? pagerHtml(ordered.length) : ""}
+</div>
 <ul class="rows connections">
 ${connections}
 </ul>
-${listFootHtml(exportHref("client-connections", { client: group.key }), group.clients.length)}
+${csvFootHtml(exportHref("client-connections", { client: group.key }))}
 </section>
 <section class="modal-section">
 ${revokeFormHtml(group, csrf)}
@@ -311,6 +345,7 @@ ${
 ${errorCardHtml("your AI clients", "/clients")}
 </div>`
 }`,
+		dialogHtml: addClientDialogHtml(mcpUrl(c.env)),
 		overlayHtml: open ? await clientModalHtml(c.env, open, allowed, session.csrf) : undefined,
 		session,
 		title: "AI clients",
@@ -691,7 +726,7 @@ ${listFootHtml(exportHref("usage"), accounts.length)}`;
 		active: "/settings",
 		attention,
 		bodyHtml: `${notice ? `<p class="notice">${escapeHtml(notice)}</p>` : ""}${warnings}
-<section class="panel">
+<section class="panel" id="allowed-clients">
 <h2>Allowed AI clients</h2>
 ${allowedUrlsHtml(allowed, csrf)}
 </section>

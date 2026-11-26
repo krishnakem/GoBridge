@@ -6,8 +6,11 @@
  */
 
 export const ACCOUNTS_CSS = String.raw`
-.account { display: flex; flex-direction: column; gap: 6px; padding: 10px 16px; border-bottom: 1px solid var(--line); }
-.services { display: flex; flex-wrap: wrap; gap: 6px; }
+.account { display: flex; flex-direction: column; gap: 4px; min-width: 0; padding: 8px 12px; border-bottom: 1px solid var(--line); }
+.account:last-of-type { border-bottom: 0; }
+.account .banner { margin: 2px 0 0; }
+.services { display: flex; flex-wrap: nowrap; gap: 4px; overflow: hidden; }
+.tag-off { color: var(--fg); border-color: var(--fg); }
 `;
 
 export const ACCOUNTS_JS = String.raw`
@@ -61,11 +64,11 @@ export const ACCOUNTS_JS = String.raw`
 					var row = el("div", "services");
 					SERVICES.forEach(function (service) {
 						var on = services[service[0]] === true;
-						row.appendChild(el("span", on ? "tag good" : "tag tag-warn", service[1] + (on ? ": on" : ": re-link")));
+						row.appendChild(el("span", on ? "tag" : "tag tag-off", service[1] + (on ? ": on" : ": re-link")));
 					});
 					node.appendChild(row);
 					if (known.data.relinkNeeded === true) node.appendChild(el("div", "banner", "This account needs to be linked again before its tools work."));
-					else if (services.driveActivity !== true) node.appendChild(el("div", "muted", "Re-link to turn on Drive Activity. Everything else works."));
+					else if (services.driveActivity !== true) node.appendChild(el("div", "muted clip", "Re-link to turn on Drive Activity. Everything else works."));
 				}
 				return node;
 			});

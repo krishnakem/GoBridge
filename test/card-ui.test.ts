@@ -937,8 +937,8 @@ describe("settings: shared components and All activity", () => {
 			}
 		}
 		// The buttons the removed headings sat over are still there.
-		expect(pages[2]).toContain('<summary class="btn btn-danger" aria-label="Revoke Copy App">Revoke…</summary>');
-		expect(pages[4]).toContain('<summary class="btn btn-danger" aria-label="Unlink copy-acct">Unlink…</summary>');
+		expect(pages[2]).toContain('<summary class="btn btn-danger" aria-label="Revoke Copy App">Revoke</summary>');
+		expect(pages[4]).toContain('<summary class="btn btn-danger" aria-label="Unlink copy-acct">Unlink</summary>');
 		// History across the rename is still followed, just not announced.
 		expect(pages[4]).toContain("<strong>Copy App</strong>");
 		expect(settings.split('id="activity"')[1]).toContain("<strong>create_draft</strong>");
@@ -951,7 +951,7 @@ describe("settings: shared components and All activity", () => {
 		const owner = await signIn();
 		const html = await (await get("/link?open=relink-me", owner.cookie)).text();
 		expect(html).toMatch(
-			/<div class="actions">\n<form method="post" action="\/link">\n<input type="hidden" name="csrf_token" value="[^"]+">\n<input type="hidden" name="alias" value="relink-me">\n<button type="submit" title="[^"]+">Re-link<\/button>\n<\/form>\n<details class="disclose confirm">\n<summary class="btn btn-danger" aria-label="Unlink relink-me">Unlink…<\/summary>/,
+			/<div class="actions">\n<form method="post" action="\/link">\n<input type="hidden" name="csrf_token" value="[^"]+">\n<input type="hidden" name="alias" value="relink-me">\n<button type="submit" title="[^"]+">Re-link<\/button>\n<\/form>\n<details class="disclose confirm">\n<summary class="btn btn-danger" aria-label="Unlink relink-me">Unlink<\/summary>/,
 		);
 		// It starts Google sign-in for the same alias.
 		const res = await post("/link", owner.cookie, { alias: "relink-me", csrf_token: owner.csrf });
@@ -1431,12 +1431,17 @@ describe("Download CSV", () => {
 		expect(usage).toHaveLength(8);
 		expect(usage[7]).toMatch(/^usage-7,person\d+@example\.com,connected,4,25,0,60,0,300,0,10$/);
 
-		// Client modal: 5 writes and 5 connections shown, everything in the files.
+		// Client modal: 5 writes; all 7 registrations, one shown at a time with arrows; everything in the files.
 		const modal = (await text(`/clients?open=${key}`, owner.cookie)).split('<div class="modal"')[1];
 		expect(modal.match(/<li class="row"><div class="row-main"><span class="mono">/g)).toHaveLength(ROW_LIMIT);
 		expect(modal).toContain(`<a class="btn" href="/export.csv?table=client-writes&amp;client=${key}" download>Download CSV</a><span class="muted small">Showing 5 of 7</span>`);
-		expect(modal.match(/<dt>Client ID<\/dt>/g)).toHaveLength(ROW_LIMIT);
-		expect(modal).toContain(`<a class="btn" href="/export.csv?table=client-connections&amp;client=${key}" download>Download CSV</a><span class="muted small">Showing 5 of 7</span>`);
+		expect(modal.match(/<dt>Client ID<\/dt>/g)).toHaveLength(7);
+		expect(modal.match(/<li data-page><dl/g)).toHaveLength(1);
+		expect(modal.match(/<li data-page hidden><dl/g)).toHaveLength(6);
+		expect(modal).toContain('<span class="pager-count muted small" aria-live="polite" data-page-count>1 of 7</span>');
+		expect(modal).toMatch(/aria-label="Previous registration"[^>]*data-page-prev disabled>/);
+		expect(modal).toMatch(/aria-label="Next registration"[^>]*data-page-next>/);
+		expect(modal).toContain(`<div class="list-foot"><a class="btn" href="/export.csv?table=client-connections&amp;client=${key}" download>Download CSV</a></div>`);
 		const writes = (await text(`/export.csv?table=client-writes&client=${key}`, owner.cookie)).trimEnd().split("\r\n");
 		expect(writes[0]).toBe("time,ai_client,account,action,outcome");
 		expect(writes).toHaveLength(8);
@@ -1480,5 +1485,160 @@ describe("Download CSV", () => {
 			expect(res.headers.get("Content-Disposition")).toBeNull();
 		}
 		for (let i = 1; i <= 7; i++) await deleteAccount(env, `usage-${i}`);
+	});
+});
+
+describe("Add a new AI client", () => {
+	it("ends the client grid with the add card, with or without clients, and keeps the setup dialog closed in the page", async () => {
+		mockGoogle();
+		const owner = await signIn("/clients");
+		const page = async () => (await get("/clients", owner.cookie)).text();
+		const lastCard = (html: string) => html.split('<div class="cards">')[1].split("</main>")[0].trim().split("\n").slice(-4).join("\n");
+
+		for (const html of [await page(), await (async () => (await allow("https://add.example/cb"), await register("Add Test App", ["https://add.example/cb"]), page()))()]) {
+			// Same card as "Link a Google account": card card-add with the "+".
+			expect(lastCard(html)).toMatch(/^<a class="card card-add" id="add-client" href="#add-client-dialog" aria-haspopup="dialog" data-dialog-open="add-client-dialog">\n<span class="add-face"><span class="plus"><svg/);
+			expect(lastCard(html)).toContain("<span>Add a new AI client</span></span>\n</a>\n</div>");
+			// The dialog sits after the shell and tab bar, closed, with no data-modal hook.
+			const dialog = html.split('<nav class="tabbar"')[1].split("</nav>")[1];
+			expect(dialog).toMatch(/^<div class="dialog" id="add-client-dialog" data-dialog>/);
+			expect(dialog).not.toContain("data-modal");
+			expect(html).not.toMatch(/<div class="shell" inert>/);
+			// The URL comes from BASE_URL; Copy is revealed by the script.
+			expect(dialog).toContain('<input type="text" class="mono" id="mcp-url" value="https://gobridge.test/mcp" readonly aria-label="MCP server URL">');
+			expect(dialog).toContain('<button type="button" class="btn" data-copy="mcp-url" aria-live="polite" hidden>Copy</button>');
+			// One tab per app, at most three steps each.
+			for (const app of ["claude", "chatgpt", "codex", "other"]) {
+				const panel = dialog.split(`id="setup-${app}"`)[1].split("</ol>")[0];
+				const steps = panel.match(/<li>/g) ?? [];
+				expect(steps.length).toBeGreaterThan(0);
+				expect(steps.length).toBeLessThanOrEqual(3);
+				expect(dialog).toContain(`role="tab" id="setup-tab-${app}" aria-controls="setup-${app}"`);
+			}
+			expect(dialog).toContain('<a href="/settings#allowed-clients">Settings</a> &gt; Allowed AI clients.');
+			// Both close controls go back to the add card, never to another page.
+			expect(dialog.match(/href="#add-client" [^>]*data-dialog-close/g)).toHaveLength(2);
+		}
+		expect(await (await get("/settings", owner.cookie)).text()).toContain('<section class="panel" id="allowed-clients">\n<h2>Allowed AI clients</h2>');
+	});
+});
+
+describe("page script (menu.js): Add a new AI client", () => {
+	it("opens in place, copies the URL, switches apps, and closes back to the unchanged page", () => {
+		vi.useFakeTimers();
+		const focusLog: string[] = [];
+		const node = (name: string, extra: Record<string, any> = {}) => {
+			const attributes: Record<string, string> = {};
+			const listeners: Record<string, ((event: any) => void)[]> = {};
+			const self: Record<string, any> = {
+				name,
+				hidden: false,
+				className: "",
+				textContent: "",
+				listeners,
+				attributes,
+				addEventListener: (type: string, fn: (event: any) => void) => (listeners[type] ??= []).push(fn),
+				setAttribute: (key: string, value: string) => (attributes[key] = value),
+				getAttribute: (key: string) => attributes[key] ?? null,
+				hasAttribute: (key: string) => key in attributes,
+				removeAttribute: (key: string) => delete attributes[key],
+				focus: () => focusLog.push(name),
+				select: () => focusLog.push(`select ${name}`),
+				...extra,
+			};
+			return self;
+		};
+		const click = () => ({ defaultPrevented: false, preventDefault() { this.defaultPrevented = true; }, stopPropagation() {} });
+		const shell = node("shell");
+		const tabbar = node("tabbar");
+		const opener = node("opener");
+		const field = node("field", { value: "https://gobridge.test/mcp" });
+		const copy = node("copy", { hidden: true, textContent: "Copy" });
+		copy.attributes["data-copy"] = "mcp-url";
+		const panels: Record<string, any> = {};
+		const tabs = ["claude", "chatgpt", "codex", "other"].map((app) => {
+			panels[`setup-${app}`] = node(`panel ${app}`);
+			const tab = node(`tab ${app}`);
+			tab.attributes["aria-controls"] = `setup-${app}`;
+			return tab;
+		});
+		const tablist = node("tablist", { hidden: true, querySelectorAll: () => tabs });
+		const box = node("box");
+		const closeX = node("close");
+		const backdrop = node("backdrop");
+		const dialog = node("dialog", {
+			id: "add-client-dialog",
+			className: "dialog",
+			querySelector: (selector: string) => ({ "[role=dialog]": box, "[data-copy]": copy, "[data-setup-tabs]": tablist })[selector] ?? null,
+			querySelectorAll: (selector: string) => (selector === "[data-dialog-close]" ? [backdrop, closeX] : []),
+		});
+		const docListeners: Record<string, ((event: any) => void)[]> = {};
+		const copied: string[] = [];
+		const fakeDocument = {
+			documentElement: { className: "" },
+			addEventListener: (type: string, fn: (event: any) => void) => (docListeners[type] ??= []).push(fn),
+			getElementById: (id: string) => (id === "mcp-url" ? field : panels[id] ?? null),
+			querySelector: (selector: string) => (selector === "[data-dialog-open=add-client-dialog]" ? opener : null),
+			querySelectorAll: (selector: string) => (selector === "[data-dialog]" ? [dialog] : selector === ".shell, .tabbar" ? [shell, tabbar] : []),
+			execCommand: (command: string) => (copied.push(`${command} ${field.value}`), true),
+		};
+		const fakeWindow = { location: { hash: "", pathname: "/clients", search: "" } };
+		new Function("document", "window", MENU_JS)(fakeDocument, fakeWindow);
+
+		// Script on: Copy and the tabs show, the first app is selected, the rest hidden.
+		expect(fakeDocument.documentElement.className).toBe(" js");
+		expect(copy.hidden).toBe(false);
+		expect(tablist.hidden).toBe(false);
+		expect(tabs.map((tab) => tab.attributes["aria-selected"])).toEqual(["true", "false", "false", "false"]);
+		expect(Object.values(panels).map((panel) => panel.hidden)).toEqual([false, true, true, true]);
+
+		// The card opens the dialog without following its link; the page behind goes inert.
+		const open = click();
+		opener.listeners.click[0](open);
+		expect(open.defaultPrevented).toBe(true);
+		expect(dialog.className).toBe("dialog open");
+		expect("inert" in shell.attributes && "inert" in tabbar.attributes).toBe(true);
+		expect(focusLog.at(-1)).toBe("box");
+
+		// Copy (no clipboard API here: the select-and-copy fallback), "Copied" for 2 seconds.
+		copy.listeners.click[0](click());
+		expect(copied).toEqual(["copy https://gobridge.test/mcp"]);
+		expect(copy.textContent).toBe("Copied");
+		vi.advanceTimersByTime(1999);
+		expect(copy.textContent).toBe("Copied");
+		vi.advanceTimersByTime(1);
+		expect(copy.textContent).toBe("Copy");
+
+		// Tabs: click, and arrow keys that wrap and do not leak to other handlers.
+		tabs[2].listeners.click[0](click());
+		expect(Object.values(panels).map((panel) => panel.hidden)).toEqual([true, true, false, true]);
+		const right = { ...click(), key: "ArrowRight" };
+		tabs[3].listeners.keydown[0](right);
+		expect(right.defaultPrevented).toBe(true);
+		expect(tabs[0].attributes["aria-selected"]).toBe("true");
+		expect(focusLog.at(-1)).toBe("tab claude");
+
+		// Escape closes; focus returns to the card; the page is as it was.
+		docListeners.keydown.forEach((fn) => fn({ ...click(), key: "Escape" }));
+		expect(dialog.className).toBe("dialog");
+		expect("inert" in shell.attributes || "inert" in tabbar.attributes).toBe(false);
+		expect(focusLog.at(-1)).toBe("opener");
+
+		// The X and the backdrop close it in place too, without following their links.
+		for (const closer of [closeX, backdrop]) {
+			opener.listeners.click[0](click());
+			const close = click();
+			closer.listeners.click[0](close);
+			expect(close.defaultPrevented).toBe(true);
+			expect(dialog.className).toBe("dialog");
+			expect("inert" in shell.attributes).toBe(false);
+		}
+		// If the browser refuses to copy, the URL stays selected and the button says how.
+		fakeDocument.execCommand = () => false;
+		copy.listeners.click[0](click());
+		expect(copy.textContent).toBe("Press \u2318C");
+		vi.advanceTimersByTime(2000);
+		expect(copy.textContent).toBe("Copy");
+		vi.useRealTimers();
 	});
 });
