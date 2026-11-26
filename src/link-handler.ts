@@ -20,15 +20,17 @@ import {
 	renameAccount,
 	saveAccount,
 } from "./accounts";
-import { aliasSpans, clientStats } from "./activity";
-import { type ClientGroup, loadClientDirectory } from "./client-groups";
 import { letterTileHtml } from "./client-logos";
 import {
-	drawerHtml,
 	emptyCardHtml,
 	errorCardHtml,
+	exportHref,
 	groupLogoHtml,
+	listFootHtml,
+	loadAccountClientRows,
 	loadOrNull,
+	modalHtml,
+	ROW_LIMIT,
 	statusHtml,
 	timeHtml,
 	usageMetersHtml,
@@ -130,7 +132,7 @@ function accountCardHtml(account: AccountInfo, relink: boolean, csrf: string): s
 ${avatarHtml(account.email, 32, account.picture)}
 <div class="card-main">
 <div class="card-title" data-rename>
-<span class="rename-view" data-rename-view><a class="card-link" href="/link?open=${alias}"><strong>${alias}</strong></a>
+<span class="rename-view" data-rename-view><a class="card-link" id="acct-${alias}" href="/link?open=${alias}"><strong>${alias}</strong></a>
 <a class="icon-btn reveal" href="/link?open=${alias}#rename" data-rename-open aria-label="Rename ${alias}" title="Rename">${ICONS.pencil}</a></span>
 <form class="rename-inline" method="post" action="/link/rename" hidden data-rename-form>
 <input type="hidden" name="csrf_token" value="${csrf}">
@@ -168,48 +170,26 @@ function addCardHtml(csrf: string, open: boolean): string {
 }
 
 /**
- * Which AI clients used this account, with last activity and write count.
- * History follows the account across renames (src/activity.ts). A client
- * that is no longer registered is listed by the name it was recorded under.
+ * Which AI clients used this account, with last activity and write count:
+ * the first ROW_LIMIT rows, and a CSV of them all.
  */
 async function accountClientsHtml(
 	env: LinkContext["env"],
 	session: OwnerSession,
 	account: AccountInfo,
 ): Promise<string> {
-	const retry = `/link?open=${escapeHtml(account.alias)}`;
-	const spans = await loadOrNull(aliasSpans(env, account.alias));
-	const stats = spans ? await loadOrNull(clientStats(env, spans)) : null;
-	if (!spans || !stats) return errorCardHtml("this account's activity", retry);
-
-	const directory = env.OAUTH_PROVIDER
-		? await loadOrNull(loadClientDirectory(env.OAUTH_PROVIDER, session.sub))
-		: null;
-	const groupOf = new Map<string, ClientGroup>();
-	for (const group of directory?.groups ?? []) {
-		for (const client of group.clients) groupOf.set(client.clientId, group);
-	}
-
-	type Row = { group?: ClientGroup; label: string; writes: number; lastActive?: string };
-	const rows = new Map<string, Row>();
-	for (const stat of stats.values()) {
-		const group = groupOf.get(stat.clientId);
-		const key = group ? `group:${group.key}` : `gone:${stat.clientName}`;
-		const row = rows.get(key) ?? { group, label: group?.label ?? (stat.clientName || "(no name)"), writes: 0 };
-		row.writes += stat.writes;
-		if (stat.lastActive && (!row.lastActive || stat.lastActive > row.lastActive)) row.lastActive = stat.lastActive;
-		rows.set(key, row);
-	}
-	const sorted = [...rows.values()].sort((a, b) => (b.lastActive ?? "").localeCompare(a.lastActive ?? ""));
-	const former = spans.slice(1).map((span) => span.alias);
-	const formerNote = former.length
-		? `<p class="muted small">Includes activity from when this account was called ${former.map((name) => `<strong>${escapeHtml(name)}</strong>`).join(", ")}.</p>`
-		: "";
-	if (!sorted.length) {
-		return `<p class="muted">No AI client has used this account in the last 90 days.</p>${formerNote}`;
+	const rows = await loadOrNull(
+		loadAccountClientRows(env, env.OAUTH_PROVIDER, session.sub, account.alias),
+	);
+	if (!rows) return errorCardHtml("this account's activity", `/link?open=${escapeHtml(account.alias)}`);
+	const foot = listFootHtml(exportHref("account-clients", { account: account.alias }), rows.length);
+	if (!rows.length) {
+		return `<p class="muted">No AI client has used this account in the last 90 days.</p>
+${foot}`;
 	}
 	return `<ul class="rows">
-${sorted
+${rows
+	.slice(0, ROW_LIMIT)
 	.map(
 		(row) => `<li class="row">
 ${row.group ? groupLogoHtml(row.group) : letterTileHtml(row.label)}
@@ -218,11 +198,12 @@ ${row.group ? groupLogoHtml(row.group) : letterTileHtml(row.label)}
 </li>`,
 	)
 	.join("\n")}
-</ul>${formerNote}`;
+</ul>
+${foot}`;
 }
 
-/** The account detail view: usage, per-client status, re-connect, rename and unlink. */
-async function accountDrawerHtml(
+/** The account detail view: usage, per-client status, rename, re-link and unlink. */
+async function accountModalHtml(
 	env: LinkContext["env"],
 	session: OwnerSession,
 	account: AccountInfo,
@@ -234,38 +215,33 @@ async function accountDrawerHtml(
 		writeUsage(env, account.alias),
 		accountClientsHtml(env, session, account),
 	]);
-	return drawerHtml({
-		bodyHtml: `<section class="drawer-section">
+	return modalHtml({
+		bodyHtml: `<section class="modal-section">
 <h3>Usage</h3>
 ${usageMetersHtml(env, usage)}
 </section>
-<section class="drawer-section">
+<section class="modal-section">
 <h3>AI clients</h3>
 ${clients}
 </section>
-<section class="drawer-section">
-<h3>Re-connect</h3>
-<p class="muted small">Sign in to Google again for this account, keeping the alias. Use this when the account needs re-login.</p>
-<form method="post" action="/link">
-<input type="hidden" name="csrf_token" value="${csrf}">
-<input type="hidden" name="alias" value="${alias}">
-<button type="submit">Re-connect at Google</button>
-</form>
-</section>
-<section class="drawer-section" id="rename">
+<section class="modal-section" id="rename">
 <h3>Rename</h3>
 <form class="stack" method="post" action="/link/rename">
 <input type="hidden" name="csrf_token" value="${csrf}">
 <input type="hidden" name="alias" value="${alias}">
-<label for="drawer-new-alias">New alias</label>
-<input id="drawer-new-alias" type="text" name="newAlias" ${ALIAS_INPUT}>
+<label for="modal-new-alias">New alias</label>
+<input id="modal-new-alias" type="text" name="newAlias" ${ALIAS_INPUT}>
 <label class="check"><input type="checkbox" name="confirm" value="yes" required><span>I understand that AI clients must use the new alias, and saved instructions that use <strong>${alias}</strong> will stop working.</span></label>
 <button type="submit">Rename</button>
 </form>
-<p class="muted small">Renaming keeps the account's access, picture and today's usage limits. At most ${OWNER_RENAME_LIMIT_PER_HOUR} renames an hour.</p>
 </section>
-<section class="drawer-section">
-<h3>Unlink</h3>
+<section class="modal-section">
+<div class="actions">
+<form method="post" action="/link">
+<input type="hidden" name="csrf_token" value="${csrf}">
+<input type="hidden" name="alias" value="${alias}">
+<button type="submit" title="Sign in to Google again for this account, keeping the alias">Re-link</button>
+</form>
 <details class="disclose confirm">
 <summary class="btn btn-danger" aria-label="Unlink ${alias}">Unlink…</summary>
 <form method="post" action="/link/unlink">
@@ -275,8 +251,9 @@ ${clients}
 <button class="btn-danger-solid" type="submit" name="confirm" value="yes">Yes, unlink ${alias}</button>
 </form>
 </details>
+</div>
 </section>`,
-		closeHref: "/link",
+		closeHref: `/link#acct-${account.alias}`,
 		leadHtml: avatarHtml(account.email, 32, account.picture),
 		subHtml: `${escapeHtml(account.email)}<br>${statusHtml(relink)} <span class="muted">· linked ${escapeHtml(account.linkedAt.slice(0, 10))}</span>`,
 		title: account.alias,
@@ -295,7 +272,7 @@ function renderLinkPage(
 		? `<p class="${note.warn ? "warn" : "notice"}">${escapeHtml(note.text)}</p>`
 		: "";
 	const relinkHelp = attention.relink.length
-		? `<p class="warn">Needs re-login: ${escapeHtml(attention.relink.join(", "))}. Either Google no longer accepts GoBridge's access, or the account was linked before the current permissions were added. Open the account and choose Re-connect.</p>`
+		? `<p class="warn">Needs re-login: ${escapeHtml(attention.relink.join(", "))}. Either Google no longer accepts GoBridge's access, or the account was linked before the current permissions were added. Open the account and choose Re-link.</p>`
 		: "";
 	const grid =
 		accounts === null
@@ -362,7 +339,7 @@ app.get("/link", async (c) => {
 	return renderLinkPage(session, accounts, attention, {
 		notice: c.req.query("msg"),
 		overlayHtml: open
-			? await accountDrawerHtml(c.env, session, open, attention.relink.includes(open.alias))
+			? await accountModalHtml(c.env, session, open, attention.relink.includes(open.alias))
 			: undefined,
 	});
 });

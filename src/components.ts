@@ -3,17 +3,18 @@
  *
  * Two of them exist so that two views can never disagree:
  *   - `clientCardsHtml` + `revokeFormHtml`: the AI client list with Revoke,
- *     used by /clients and by /settings;
+ *     on /clients and in its detail view;
  *   - `usageMetersHtml`: an account's usage, used by /settings and by the
  *     account detail view on /link.
  *
  * Everything returned is trusted markup: every dynamic value (alias, client
  * name, redirect URL, audit text) is escaped here, on output.
  */
-import { type ClientStat, clientStats, recentWrites } from "./activity";
+import type { OAuthHelpers } from "@cloudflare/workers-oauth-provider";
+import { aliasSpans, type ClientStat, clientStats, recentWrites } from "./activity";
 import { isRedirectAllowed } from "./allowed-clients";
 import { brandLogoHtml, letterTileHtml } from "./client-logos";
-import type { ClientGroup } from "./client-groups";
+import { type ClientGroup, loadClientDirectory } from "./client-groups";
 import {
 	type AuditEntry,
 	dailySendCap,
@@ -81,31 +82,96 @@ export async function loadOrNull<T>(load: Promise<T>): Promise<T | null> {
 }
 
 /**
- * A detail view: a side drawer on desktop, a full-screen sheet on phones.
- * It is part of the page the server sends (opened by `?open=`), so it works
- * without JavaScript; /static/menu.js only adds Escape-to-close and moves
- * focus in. `closeHref` is the same page without `?open=`.
+ * A detail view: a centered modal card over a dimmed backdrop (near full
+ * screen on phones), scrolling inside when tall. It is part of the page the
+ * server sends (opened by `?open=`), so it works without JavaScript: the X
+ * and the backdrop are links back to the page, and the page behind is
+ * `inert`, which keeps keyboard focus inside the modal. /static/menu.js adds
+ * Escape-to-close and moves focus in.
+ *
+ * `closeHref` is the same page with a fragment naming the card that was
+ * clicked, so focus returns to it. Callers build it from a validated alias
+ * or group key only.
  */
-export function drawerHtml(options: {
+export function modalHtml(options: {
 	title: string;
-	closeHref: "/link" | "/clients";
+	closeHref: string;
 	/** Logo or avatar beside the title, and lines under it. Trusted markup. */
 	leadHtml: string;
 	subHtml: string;
 	bodyHtml: string;
 }): string {
-	return `<a class="drawer-backdrop" href="${options.closeHref}" tabindex="-1" aria-hidden="true"></a>
-<aside class="drawer" role="dialog" aria-modal="true" aria-labelledby="drawer-title" tabindex="-1" data-drawer>
-<div class="drawer-head">
+	const close = escapeHtml(options.closeHref);
+	return `<a class="modal-backdrop" href="${close}" tabindex="-1" aria-hidden="true"></a>
+<div class="modal" role="dialog" aria-modal="true" aria-labelledby="modal-title" tabindex="-1" data-modal>
+<div class="modal-head">
 ${options.leadHtml}
 <div class="card-main">
-<h2 id="drawer-title">${escapeHtml(options.title)}</h2>
+<h2 id="modal-title">${escapeHtml(options.title)}</h2>
 <div class="card-sub">${options.subHtml}</div>
 </div>
-<a class="icon-btn" href="${options.closeHref}" aria-label="Close" title="Close" data-drawer-close>${ICONS.close}</a>
+<a class="icon-btn" href="${close}" aria-label="Close" title="Close" data-modal-close>${ICONS.close}</a>
 </div>
 ${options.bodyHtml}
-</aside>`;
+</div>`;
+}
+
+// ---------- Data lists: 5 rows and a CSV of everything ----------
+
+/** Every table or list of data shows this many rows; the rest are in its CSV. */
+export const ROW_LIMIT = 5;
+
+export type ExportTable = "activity" | "usage" | "client-writes" | "client-connections" | "account-clients";
+
+/** The address of a list's CSV. `params` hold only validated values (a group key, an alias). */
+export function exportHref(table: ExportTable, params: Record<string, string | undefined> = {}): string {
+	const search = new URLSearchParams({ table });
+	for (const [name, value] of Object.entries(params)) if (value) search.set(name, value);
+	return `/export.csv?${search}`;
+}
+
+/** Under a list: the Download CSV button and, when rows are hidden, how many there are. */
+export function listFootHtml(href: string, total: number): string {
+	return `<div class="list-foot"><a class="btn" href="${escapeHtml(href)}" download>Download CSV</a>${
+		total > ROW_LIMIT ? `<span class="muted small">Showing ${ROW_LIMIT} of ${total}</span>` : ""
+	}</div>`;
+}
+
+/** One AI client's use of one account. */
+export type AccountClientRow = {
+	group?: ClientGroup;
+	label: string;
+	writes: number;
+	lastActive?: string;
+};
+
+/**
+ * Which AI clients used an account, most recent first, across the account's
+ * renames. A client that is no longer registered is listed by the name it
+ * was recorded under. Throws if the audit log cannot be read.
+ */
+export async function loadAccountClientRows(
+	env: Env,
+	helpers: OAuthHelpers | undefined,
+	userId: string,
+	alias: string,
+): Promise<AccountClientRow[]> {
+	const stats = await clientStats(env, await aliasSpans(env, alias));
+	const directory = helpers ? await loadOrNull(loadClientDirectory(helpers, userId)) : null;
+	const groupOf = new Map<string, ClientGroup>();
+	for (const group of directory?.groups ?? []) {
+		for (const client of group.clients) groupOf.set(client.clientId, group);
+	}
+	const rows = new Map<string, AccountClientRow>();
+	for (const stat of stats.values()) {
+		const group = groupOf.get(stat.clientId);
+		const key = group ? `group:${group.key}` : `gone:${stat.clientName}`;
+		const row = rows.get(key) ?? { group, label: group?.label ?? (stat.clientName || "(no name)"), writes: 0 };
+		row.writes += stat.writes;
+		if (stat.lastActive && (!row.lastActive || stat.lastActive > row.lastActive)) row.lastActive = stat.lastActive;
+		rows.set(key, row);
+	}
+	return [...rows.values()].sort((a, b) => (b.lastActive ?? "").localeCompare(a.lastActive ?? ""));
 }
 
 // ---------- Shared component: usage ----------
@@ -266,7 +332,7 @@ ${emptyCardHtml(
 <div class="card-head">
 ${groupLogoHtml(group)}
 <div class="card-main">
-<div class="card-title"><a class="card-link" href="/clients?open=${escapeHtml(group.key)}"><strong>${label}</strong></a></div>
+<div class="card-title"><a class="card-link" id="app-${escapeHtml(group.key)}" href="/clients?open=${escapeHtml(group.key)}"><strong>${label}</strong></a></div>
 <div class="card-sub">${connected}${stats?.lastActive ? ` · last active ${timeHtml(stats.lastActive, now)}` : ""}</div>
 </div>
 </div>
