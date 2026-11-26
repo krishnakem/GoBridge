@@ -12,51 +12,55 @@
  */
 
 export const WORKSPACE_CSS = String.raw`
-.doc { display: flex; align-items: flex-start; }
-.outline { flex: none; width: 190px; display: flex; flex-direction: column; padding: 8px; border-right: 1px solid var(--line); max-height: 520px; overflow-y: auto; }
-.outline-item { all: unset; box-sizing: border-box; min-height: 30px; padding: 4px 8px; border-radius: 6px; cursor: pointer; font-size: 13px; }
-.outline-item:hover, .outline-on { background: var(--bg-soft); }
+.doc { display: flex; align-items: flex-start; border-top: 1px solid var(--line); }
+.outline { flex: none; width: 168px; display: flex; flex-direction: column; padding: 6px; border-right: 1px solid var(--line); max-height: 340px; overflow-y: auto; }
+.outline-item { all: unset; box-sizing: border-box; min-height: 26px; padding: 4px 8px; border-radius: 6px; cursor: pointer; font-size: 12px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.outline-item:hover, .outline-on { background: var(--bg-hover); }
 .outline-on { font-weight: 600; }
-.indent-2 { padding-left: 18px; }
-.indent-3 { padding-left: 28px; }
-.doc-main { flex: 1; min-width: 0; padding: 12px 16px; display: flex; flex-direction: column; gap: 8px; max-height: 520px; overflow-y: auto; }
+.indent-2 { padding-left: 16px; }
+.indent-3 { padding-left: 24px; }
+.doc-main { flex: 1; min-width: 0; padding: 10px 12px; display: flex; flex-direction: column; gap: 6px; max-height: 340px; overflow-y: auto; }
 .para { margin: 0; white-space: pre-wrap; }
-.h1 { font-size: 18px; font-weight: 700; }
-.h2 { font-size: 16px; font-weight: 700; }
-.h3 { font-size: 14px; font-weight: 700; }
+.h1 { font-size: 16px; font-weight: 700; }
+.h2 { font-size: 14px; font-weight: 700; }
+.h3 { font-size: 13px; font-weight: 700; }
 .bullet::before { content: "• "; }
-.ins { color: var(--good); text-decoration: underline; }
-.del { color: var(--bad); text-decoration: line-through; }
-.comment { border: 1px solid var(--line); border-radius: 10px; padding: 8px 10px; display: flex; flex-direction: column; gap: 4px; }
-.quote { border-left: 3px solid var(--line); padding-left: 8px; color: var(--muted); font-size: 12px; }
-.comment-reply { padding-left: 12px; font-size: 13px; }
-.sheet-wrap { overflow: auto; max-height: 420px; }
-.sheet { border-collapse: collapse; font-size: 13px; width: 100%; }
-.sheet th, .sheet td { border: 1px solid var(--line); padding: 4px 8px; text-align: left; vertical-align: top; }
-.sheet th { background: var(--bg-soft); position: sticky; top: 0; padding: 0; }
-.sort { all: unset; box-sizing: border-box; display: block; width: 100%; min-height: 32px; padding: 6px 8px; font-weight: 600; cursor: pointer; }
+.ins { text-decoration: underline; }
+.del { text-decoration: line-through; color: var(--muted); }
+.comment { border: 1px solid var(--line); border-radius: 8px; padding: 6px 8px; display: flex; flex-direction: column; gap: 2px; min-width: 0; }
+.quote { border-left: 2px solid var(--line); padding-left: 6px; color: var(--muted); font-size: 11px; }
+.comment-reply { padding-left: 10px; font-size: 12px; color: var(--muted); }
+.sheet-wrap { overflow: auto; max-height: 300px; }
+.sheet { border-collapse: collapse; font-size: 12px; width: 100%; }
+.sheet th, .sheet td { border-bottom: 1px solid var(--line); padding: 4px 8px; text-align: left; vertical-align: top; max-width: 220px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.sheet th { background: var(--bg); position: sticky; top: 0; padding: 0; border-bottom-color: var(--line-strong); }
+.sort { all: unset; box-sizing: border-box; display: block; width: 100%; min-height: 28px; padding: 5px 8px; font-weight: 600; cursor: pointer; overflow: hidden; text-overflow: ellipsis; }
+.sort:hover { background: var(--bg-soft); }
 .num { text-align: right; font-variant-numeric: tabular-nums; }
 .sheet td.num { text-align: right; }
-.neg { color: var(--bad); }
-.chart { display: flex; flex-direction: column; gap: 4px; padding: 12px 16px; border-top: 1px solid var(--line); }
-.bar-row { display: flex; align-items: center; gap: 8px; font-size: 12px; }
-.bar-label { flex: none; width: 110px; }
-.bar-track { flex: 1; height: 14px; background: var(--bg-soft); border-radius: 4px; overflow: hidden; }
-.bar { height: 100%; background: var(--accent); border-radius: 4px; }
-.bar-neg { background: var(--bad); }
-.bar-value { flex: none; width: 70px; text-align: right; font-variant-numeric: tabular-nums; }
-.grid4 { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 8px; padding: 12px 16px; }
-.slide { all: unset; box-sizing: border-box; display: flex; flex-direction: column; gap: 4px; height: 92px; padding: 8px; border: 1px solid var(--line); border-radius: 8px; overflow: hidden; cursor: pointer; font-size: 11px; background: var(--bg-soft); }
-.slide-on { border: 2px solid var(--accent); }
-.slide-number { font-weight: 700; color: var(--muted); }
+.neg { color: var(--fg); }
+.chart { display: flex; flex-direction: column; gap: 3px; padding: 10px 12px; border-top: 1px solid var(--line); }
+.bar-row { display: flex; align-items: center; gap: 8px; font-size: 11px; }
+.bar-label { flex: none; width: 100px; }
+.bar-track { flex: 1; height: 10px; background: var(--bg-hover); border-radius: 3px; overflow: hidden; }
+.bar { height: 100%; background: var(--muted); border-radius: 3px; }
+.bar-neg { background: var(--fg); }
+.bar-value { flex: none; width: 64px; text-align: right; font-variant-numeric: tabular-nums; }
+.grid4 { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 6px; padding: 10px 12px; }
+.slide { all: unset; box-sizing: border-box; display: flex; flex-direction: column; gap: 2px; height: 64px; padding: 6px 8px; border: 1px solid var(--line); border-radius: 8px; overflow: hidden; cursor: pointer; font-size: 11px; background: var(--bg); }
+.slide:hover { border-color: var(--line-strong); }
+.slide-on { box-shadow: inset 0 0 0 1px var(--fg); border-color: var(--fg); }
+.slide-number { font-weight: 600; color: var(--muted); }
+.slide-text { overflow: hidden; display: -webkit-box; -webkit-box-orient: vertical; -webkit-line-clamp: 2; line-clamp: 2; }
 .thumb { display: block; max-width: 100%; height: auto; margin: 0 auto; border: 1px solid var(--line); border-radius: 8px; }
-.thumb-nav { display: flex; align-items: center; justify-content: center; gap: 10px; padding: 10px 16px; }
-.dots { display: flex; flex-wrap: wrap; justify-content: center; gap: 5px; }
-.pip { width: 8px; height: 8px; border-radius: 50%; background: var(--line); }
-.pip-on { background: var(--accent); }
+.thumb-nav { display: flex; align-items: center; justify-content: center; gap: 8px; padding: 8px 12px; }
+.dots { display: flex; flex-wrap: wrap; justify-content: center; gap: 4px; }
+.pip { width: 6px; height: 6px; border-radius: 50%; background: var(--line); }
+.pip-on { background: var(--fg); }
+.group { padding: 8px 12px 2px; font-size: 11px; font-weight: 600; color: var(--muted); }
 @media (max-width: 480px) {
 	.doc { flex-direction: column; }
-	.outline { width: 100%; border-right: 0; border-bottom: 1px solid var(--line); max-height: 140px; }
+	.outline { width: 100%; border-right: 0; border-bottom: 1px solid var(--line); max-height: 120px; }
 	.grid4 { grid-template-columns: repeat(2, minmax(0, 1fr)); }
 }
 `;
@@ -163,13 +167,16 @@ export const WORKSPACE_JS = String.raw`
 		});
 		return node;
 	}
+	/** One comment in at most five rows: author, quoted text, two lines of comment, and the latest reply. */
 	function commentNode(comment) {
-		var node = el("div", "comment", null, el("div", "row", null, el("span", "strong", comment.author || "Someone"), comment.resolved ? el("span", "tag", "Resolved") : null));
-		if (comment.quoted) node.appendChild(el("div", "quote", comment.quoted));
-		if (comment.content) node.appendChild(el("div", "text", comment.content));
-		(Array.isArray(comment.replies) ? comment.replies : []).forEach(function (reply) {
-			node.appendChild(el("div", "comment-reply", (reply.author || "Someone") + ": " + (reply.content || "")));
-		});
+		var node = el("div", "comment", null, el("div", "row", null, el("span", "strong clip", comment.author || "Someone"), comment.resolved ? el("span", "tag", "Resolved") : null));
+		if (comment.quoted) node.appendChild(el("div", "quote clip", comment.quoted));
+		if (comment.content) node.appendChild(moreText(comment.content, 2));
+		var replies = Array.isArray(comment.replies) ? comment.replies : [];
+		if (replies.length) {
+			var last = replies[replies.length - 1] || {};
+			node.appendChild(el("div", "comment-reply clip", (replies.length > 1 ? replies.length + " replies · " : "") + (last.author || "Someone") + ": " + (last.content || "")));
+		}
 		return node;
 	}
 
@@ -246,7 +253,7 @@ export const WORKSPACE_JS = String.raw`
 				tool: "read_doc",
 				account: account,
 				line: App.argsLine(args),
-				body: [el("div", "pad title", data.title || "Document"), el("div", "doc", null, headings.length ? outline : null, main)],
+				body: [el("div", "pad title clip", data.title || "Document"), el("div", "doc", null, headings.length ? outline : null, main)],
 				actions: [
 					account
 						? button(inline ? "Hide suggestions" : "Show suggestions", "btn", function () {
@@ -466,7 +473,7 @@ export const WORKSPACE_JS = String.raw`
 					App.redraw();
 				});
 				tile.appendChild(el("span", "slide-number", "Slide " + (first + index + 1)));
-				tile.appendChild(el("span", null, clip(slide.text, 90) || "No text"));
+				tile.appendChild(el("span", "slide-text", clip(slide.text, 90) || "No text"));
 				grid.appendChild(tile);
 			});
 			var chosen = slides[state.chosen];
@@ -476,9 +483,9 @@ export const WORKSPACE_JS = String.raw`
 						"pad stack",
 						null,
 						el("div", "strong", "Slide " + (first + state.chosen + 1)),
-						el("pre", "text", chosen.text || "This slide has no text."),
-						el("div", "strong", "Speaker notes"),
-						el("pre", "text", chosen.notes || "No speaker notes.")
+						moreText(chosen.text || "This slide has no text.", 2),
+						el("div", "muted", "Speaker notes"),
+						moreText(chosen.notes || "No speaker notes.", 1)
 					)
 				: null;
 			var total = Number(data.slideCount) || slides.length;
@@ -486,7 +493,7 @@ export const WORKSPACE_JS = String.raw`
 				tool: "read_presentation",
 				account: account,
 				line: App.argsLine(args),
-				body: [el("div", "pad stack", null, el("div", "title", data.title || "Presentation"), el("div", "muted", plural(total, "slide"))), slides.length ? grid : el("p", "note", "No slides on this page."), detail],
+				body: [el("div", "pad stack", null, el("div", "title clip", data.title || "Presentation"), el("div", "muted", plural(total, "slide"))), slides.length ? grid : el("p", "note", "No slides on this page."), detail],
 				actions: [
 					account && chosen && isId(chosen.id) && isId(id)
 						? button("Show slide image", "btn", function () {
@@ -566,7 +573,7 @@ export const WORKSPACE_JS = String.raw`
 				});
 				body.push(el("div", "thumb-nav", null, previous, el("span", "muted", "Slide " + (index + 1) + " of " + deck.slides.length), next));
 				body.push(dots);
-				body.push(el("div", "pad stack", null, el("div", "strong", "Speaker notes"), el("pre", "text", deck.slides[index].notes || "No speaker notes.")));
+				body.push(el("div", "pad stack", null, el("div", "muted", "Speaker notes"), moreText(deck.slides[index].notes || "No speaker notes.", 2)));
 			}
 			var size = Number(info.widthPx) && Number(info.heightPx) ? Number(info.widthPx) + " × " + Number(info.heightPx) + " px" : "";
 			App.draw({
@@ -660,8 +667,9 @@ export const WORKSPACE_JS = String.raw`
 			var facts = el("div", "pad pairs", null, pair("Account", account || "this account"));
 			if (data.tableRange) facts.appendChild(pair("Table", data.tableRange));
 			if (updates.updatedRange) facts.appendChild(pair("Written to", updates.updatedRange));
-			if (updates.updatedRows !== undefined) facts.appendChild(pair("Rows", String(Number(updates.updatedRows) || 0)));
-			if (updates.updatedCells !== undefined) facts.appendChild(pair("Cells", String(Number(updates.updatedCells) || 0)));
+			if (updates.updatedRows !== undefined || updates.updatedCells !== undefined) {
+				facts.appendChild(pair("Rows", String(Number(updates.updatedRows) || 0) + " (" + plural(Number(updates.updatedCells) || 0, "cell") + ")"));
+			}
 			facts.appendChild(pair("Stored as", args.valueInputOption === "USER_ENTERED" ? "USER_ENTERED (formulas run)" : "RAW (exactly as typed)"));
 			App.draw({
 				tool: "append_values",

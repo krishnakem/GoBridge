@@ -130,6 +130,11 @@ export function exportHref(table: ExportTable, params: Record<string, string | u
 	return `/export.csv?${search}`;
 }
 
+/** Under a list that shows everything another way (a pager): the Download CSV button only. */
+export function csvFootHtml(href: string): string {
+	return `<div class="list-foot"><a class="btn" href="${escapeHtml(href)}" download>Download CSV</a></div>`;
+}
+
 /** Under a list: the Download CSV button and, when rows are hidden, how many there are. */
 export function listFootHtml(href: string, total: number): string {
 	return `<div class="list-foot"><a class="btn" href="${escapeHtml(href)}" download>Download CSV</a>${
@@ -286,7 +291,7 @@ export function groupBadgesHtml(group: ClientGroup, allowed: readonly string[] |
 export function revokeFormHtml(group: ClientGroup, csrf: string): string {
 	const label = escapeHtml(group.label);
 	return `<details class="disclose confirm">
-<summary class="btn btn-danger" aria-label="Revoke ${label}">Revoke…</summary>
+<summary class="btn btn-danger" aria-label="Revoke ${label}">Revoke</summary>
 <form method="post" action="/clients/revoke">
 <input type="hidden" name="csrf_token" value="${escapeHtml(csrf)}">
 <input type="hidden" name="group" value="${escapeHtml(group.key)}">
@@ -315,10 +320,8 @@ export function clientCardsHtml(
 	const now = options.now ?? Date.now();
 	if (!groups.length) {
 		return `<div class="cards">
-${emptyCardHtml(
-	"No AI clients yet",
-	`<p class="card-sub">To connect one, add this server as a custom connector in your AI app (for example Claude or ChatGPT), using the address ending in <code>/mcp</code>. The app must use a redirect URL that is on the allowed list in <a href="/settings">Settings</a>; if it is not, GoBridge shows you the exact URL to add.</p>`,
-)}
+${emptyCardHtml("No AI clients yet", '<p class="card-sub">Add one with the card next to this one.</p>')}
+${addClientCardHtml()}
 </div>`;
 	}
 	const cards = groups.map((group) => {
@@ -348,5 +351,104 @@ ${groupLogoHtml(group)}
 	});
 	return `<div class="cards">
 ${cards.join("\n")}
+${addClientCardHtml()}
+</div>`;
+}
+
+// ---------- Add a new AI client ----------
+
+/** The dialog's id; the add card links to it, so it also opens without JavaScript (CSS :target). */
+export const ADD_CLIENT_DIALOG_ID = "add-client-dialog";
+
+/**
+ * The last card on /clients. Same look as "Link a Google account" on
+ * /link (card-add, the "+"), but it opens the setup dialog instead of a form.
+ */
+export function addClientCardHtml(): string {
+	return `<a class="card card-add" id="add-client" href="#${ADD_CLIENT_DIALOG_ID}" aria-haspopup="dialog" data-dialog-open="${ADD_CLIENT_DIALOG_ID}">
+<span class="add-face"><span class="plus">${ICONS.plus}</span><span>Add a new AI client</span></span>
+</a>`;
+}
+
+/**
+ * Setup steps per app, at most three each. Menu names follow each vendor's
+ * current docs (checked 2026-11-25); where a label could not be confirmed the
+ * step stays generic.
+ */
+const SETUP_APPS: readonly { id: string; label: string; steps: readonly string[] }[] = [
+	{
+		id: "claude",
+		label: "Claude",
+		steps: [
+			"Open <strong>Customize &gt; Connectors</strong>, press <strong>+ Add</strong>, then <strong>Add custom connector</strong>.",
+			"Name it GoBridge, paste the URL, and press <strong>Continue</strong> until you can press <strong>Add</strong>.",
+			"Sign in with Google when asked.",
+		],
+	},
+	{
+		id: "chatgpt",
+		label: "ChatGPT",
+		steps: [
+			"Open <strong>Plugins</strong>, press <strong>+</strong>, then <strong>Add custom MCP server</strong>. A workspace admin may need to allow this first.",
+			"Paste the URL as the <strong>Server URL</strong>, choose <strong>OAuth</strong>, and create it.",
+			"Sign in with Google when asked.",
+		],
+	},
+	{
+		id: "codex",
+		label: "Codex",
+		steps: [
+			"Open the <strong>MCP servers</strong> settings and choose <strong>Add server</strong>.",
+			"Name it GoBridge, pick <strong>Streamable HTTP</strong>, paste the URL, and save.",
+			"Sign in with Google when asked. In the terminal: <code>codex mcp login gobridge</code>.",
+		],
+	},
+	{
+		id: "other",
+		label: "Other",
+		steps: ["Add a remote MCP server (Streamable HTTP) with this URL.", "Sign in with Google when asked."],
+	},
+];
+
+/**
+ * The "Add a new AI client" dialog: the MCP URL with Copy, setup steps per
+ * app, and where to allow a blocked app. Closed until the add card is used.
+ * /static/menu.js opens and closes it in place (no reload, page unchanged),
+ * runs Copy and the app tabs; without JavaScript it opens through :target,
+ * shows every app's steps, and the close links return to the add card.
+ * `mcpUrl` is built by the server from BASE_URL, never from the request.
+ */
+export function addClientDialogHtml(mcpUrl: string): string {
+	const url = escapeHtml(mcpUrl);
+	const tabs = SETUP_APPS.map(
+		(app, index) =>
+			`<button type="button" role="tab" id="setup-tab-${app.id}" aria-controls="setup-${app.id}" aria-selected="${index === 0}"${index ? ' tabindex="-1"' : ""}>${app.label}</button>`,
+	).join("");
+	const panels = SETUP_APPS.map(
+		(app) => `<div class="setup-panel" role="tabpanel" id="setup-${app.id}" aria-labelledby="setup-tab-${app.id}" data-setup-panel>
+<h3 class="setup-app">${app.label}</h3>
+<ol class="setup-steps">
+${app.steps.map((step) => `<li>${step}</li>`).join("\n")}
+</ol>
+</div>`,
+	).join("\n");
+	return `<div class="dialog" id="${ADD_CLIENT_DIALOG_ID}" data-dialog>
+<a class="modal-backdrop" href="#add-client" tabindex="-1" aria-hidden="true" data-dialog-close></a>
+<div class="modal" role="dialog" aria-modal="true" aria-labelledby="add-client-title" tabindex="-1">
+<div class="modal-head">
+<div class="card-main">
+<h2 id="add-client-title">Add a new AI client</h2>
+<div class="card-sub">Connect Claude, ChatGPT, Codex or another app to GoBridge.</div>
+</div>
+<a class="icon-btn" href="#add-client" aria-label="Close" title="Close" data-dialog-close>${ICONS.close}</a>
+</div>
+<div class="copy-row">
+<input type="text" class="mono" id="mcp-url" value="${url}" readonly aria-label="MCP server URL">
+<button type="button" class="btn" data-copy="mcp-url" aria-live="polite" hidden>Copy</button>
+</div>
+<div class="segmented" role="tablist" aria-label="Setup steps for" data-setup-tabs hidden>${tabs}</div>
+${panels}
+<p class="small muted setup-foot">If the app is blocked, add the redirect URL GoBridge shows you in <a href="/settings#allowed-clients">Settings</a> &gt; Allowed AI clients.</p>
+</div>
 </div>`;
 }

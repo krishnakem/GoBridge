@@ -170,6 +170,8 @@ const icon = (paths: string) =>
 
 /** Icons for the card actions on the owner pages (inline SVG, no data). */
 export const ICONS = {
+	chevronLeft: icon('<path d="M15 5l-7 7 7 7"/>'),
+	chevronRight: icon('<path d="M9 5l7 7-7 7"/>'),
 	close: icon('<path d="M6 6l12 12M18 6L6 18"/>'),
 	info: icon('<circle cx="12" cy="12" r="9"/><path d="M12 11v5M12 8h.01"/>'),
 	pencil: icon('<path d="M4 20h4L19 9l-4-4L4 16v4z"/><path d="M13.5 6.5l4 4"/>'),
@@ -271,8 +273,13 @@ export function renderOwnerPage(options: {
 	 * screen reader, so keyboard focus stays in the modal without any script.
 	 */
 	overlayHtml?: string;
+	/**
+	 * A dialog kept in the page but closed (see addClientDialogHtml). It sits
+	 * outside the shell so the shell can be made inert while it is open.
+	 */
+	dialogHtml?: string;
 }): Response {
-	const { title, active, session, attention, bodyHtml, overlayHtml } = options;
+	const { title, active, session, attention, bodyHtml, overlayHtml, dialogHtml } = options;
 	const inert = overlayHtml ? " inert" : "";
 	return renderDocument(
 		title,
@@ -300,7 +307,7 @@ ${bodyHtml}
 </div>
 <nav class="tabbar" aria-label="Main"${inert}>
 ${navLinks(active, attention, false)}
-</nav>${overlayHtml ?? ""}`,
+</nav>${overlayHtml ?? ""}${dialogHtml ?? ""}`,
 		200,
 		undefined,
 		OWNER_PAGE_CSP,

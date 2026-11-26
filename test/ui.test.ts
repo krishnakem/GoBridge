@@ -11,7 +11,7 @@ import { CALENDAR_JS } from "../src/ui/calendar-card";
 import { DRIVE_JS } from "../src/ui/drive-card";
 import { MAIL_JS } from "../src/ui/mail-card";
 import { WORKSPACE_JS } from "../src/ui/workspace-card";
-import { cardHtml, registerUiResources, UI_CARDS, UI_MIME_TYPE, uiCardsMode, uiResourceUri } from "../src/ui/resources";
+import { cardHtml, drawablePng, LOGO_DATA_URL, registerUiResources, UI_CARDS, UI_MIME_TYPE, uiCardsMode, uiResourceUri } from "../src/ui/resources";
 import { expectInert, HOSTILE, mountCard, textResult } from "./helpers/fake-dom";
 
 const CLIENT = { clientId: "client-ui-1", clientName: "Claude" };
@@ -68,8 +68,8 @@ const metaFor = (card: string) => ({ ui: { resourceUri: `ui://gobridge/${card}.h
 const expectedMeta = (cards: Record<string, string>) => Object.fromEntries(Object.entries(cards).map(([tool, card]) => [tool, metaFor(card)]));
 
 /** URLs that may appear in a card's source: an XML namespace name and GoBridge's own fixed link targets. */
-/** img-src in each card's own policy: 'none' unless listed. */
-const IMG_SRC: Record<string, string> = { workspace: "data:" };
+/** img-src in each card's own policy: data: for all (the inlined logo; workspace also shows the slide image). */
+const IMG_SRC: Record<string, string> = { accounts: "data:", calendar: "data:", drive: "data:", mail: "data:", workspace: "data:" };
 
 const ALLOWED_URLS = new Set(["http://www.w3.org/2000/svg", "https://calendar.google.com/calendar/event?eid=", "https://docs.google.com/", "https://gobridge.test/link"]);
 
@@ -244,19 +244,21 @@ describe("ui:// resources", () => {
 			expect(source).not.toMatch(/<\/script|<!--/i);
 			// Attributes are only ever set from constants: a literal name, then a literal or a fixed icon path.
 			for (const call of source.match(/setAttribute\([^)]*\)/g) ?? []) {
-				expect(call).toMatch(/^setAttribute\("(data-theme|viewBox|class|aria-hidden|aria-label|d)", ("[^"]*"|context\.theme|label|ICON_PATHS\[name\])\)$/);
+				expect(call).toMatch(/^setAttribute\("(viewBox|class|aria-hidden|aria-label|aria-expanded|d)", ("[^"]*"|label|ICON_PATHS\[name\])\)$/);
 			}
 		}
 	});
 });
 
 describe("mail card", () => {
-	it("completes the handshake and applies the host theme", async () => {
+	it("completes the handshake and stays light whatever the host theme", async () => {
 		const card = await mountCard(mailScript);
 		const init = card.sent.find((m) => m.method === "ui/initialize");
 		expect(init.params.protocolVersion).toBe("2026-01-26");
 		expect(card.sent.some((m) => m.method === "ui/notifications/initialized" && m.id === undefined)).toBe(true);
-		expect(card.html.attributes["data-theme"]).toBe("dark");
+		// The host says dark; the card stays white with black text and takes no host style.
+		expect(card.html.attributes["data-theme"]).toBeUndefined();
+		expect(card.html.styles).toEqual({});
 	});
 
 	it("ignores messages that do not come from the host frame", async () => {
@@ -278,6 +280,32 @@ describe("mail card", () => {
 		const chip = card.nodes().find((n) => n.className.startsWith("chip"))!;
 		expect(chip.textContent).toBe("michigan");
 		expect(chip.className).toBe("chip chip-indigo");
+	});
+
+	it("labels the card with the GoBridge logo and name, from the inlined constant only", async () => {
+		const card = await mountCard(`var GB_LOGO=${JSON.stringify(LOGO_DATA_URL)};` + mailScript, { tool: "search_threads" });
+		card.notify("ui/notifications/tool-input", { arguments: { account: "gmail" } });
+		card.notify("ui/notifications/tool-result", textResult({ threads: [] }));
+		const logo = card.nodes().find((n) => n.tagName === "img")!;
+		expect(logo.className).toBe("brand-logo");
+		expect(logo.attributes.src).toBe(LOGO_DATA_URL);
+		expect(card.root.texts()[0]).toBe("GoBridge");
+		// Without a valid constant there is no image, only the name.
+		const bare = await mountCard(`var GB_LOGO="javascript:alert(1)";` + mailScript, { tool: "search_threads" });
+		bare.notify("ui/notifications/tool-result", textResult({ threads: [] }));
+		expect(bare.nodes().some((n) => n.tagName === "img")).toBe(false);
+		expect(bare.root.texts()).toContain("GoBridge");
+	});
+
+	it("inlines only the logo's drawing chunks, not its provenance manifest", () => {
+		const png = Uint8Array.from(atob(LOGO_DATA_URL.slice("data:image/png;base64,".length)), (c) => c.charCodeAt(0));
+		const chunks: string[] = [];
+		for (let at = 8; at < png.length; at += 12 + new DataView(png.buffer).getUint32(at)) chunks.push(String.fromCharCode(...png.subarray(at + 4, at + 8)));
+		expect(chunks[0]).toBe("IHDR");
+		expect(chunks.at(-1)).toBe("IEND");
+		expect(chunks.every((type) => ["IHDR", "IDAT", "IEND"].includes(type))).toBe(true);
+		expect(drawablePng(png)).toEqual(png);
+		expect(png.length).toBeLessThan(8000);
 	});
 
 	it("shows hostile email content as inert text and offers no link for it", async () => {

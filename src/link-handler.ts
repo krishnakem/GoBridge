@@ -243,7 +243,7 @@ ${clients}
 <button type="submit" title="Sign in to Google again for this account, keeping the alias">Re-link</button>
 </form>
 <details class="disclose confirm">
-<summary class="btn btn-danger" aria-label="Unlink ${alias}">Unlink…</summary>
+<summary class="btn btn-danger" aria-label="Unlink ${alias}">Unlink</summary>
 <form method="post" action="/link/unlink">
 <input type="hidden" name="csrf_token" value="${csrf}">
 <input type="hidden" name="alias" value="${alias}">

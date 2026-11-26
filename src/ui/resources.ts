@@ -13,8 +13,12 @@
  * applies (no network, inline script and style allowed). Each document also
  * carries its own stricter <meta> policy pinned to the hashes of its one script
  * and one style block, so an injected script or inline handler cannot run.
+ * img-src is data: only: the GoBridge logo in every card's header is the 64 px
+ * PNG from assets/logo/ inlined as a constant data: URL (GB_LOGO), and the
+ * workspace card also shows the slide image GoBridge fetched server-side.
  */
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
+import logo64 from "../../assets/logo/logo-64.png";
 import { ACCOUNTS_CSS, ACCOUNTS_JS } from "./accounts-card";
 import { APP_JS, BASE_CSS, BRIDGE_JS, HELPERS_JS } from "./bridge";
 import { CALENDAR_CSS, CALENDAR_JS } from "./calendar-card";
@@ -32,8 +36,6 @@ type CardSource = {
 	description: string;
 	css: string;
 	js: string;
-	/** The card's own img-src. 'none' everywhere except where an MCP image block is shown. */
-	img: "'none'" | "data:";
 	/** Gets GB_LINK_URL: GoBridge's own /link page, the only non-Google link a card may open. */
 	linkUrl?: boolean;
 };
@@ -44,36 +46,30 @@ const CARDS: Record<UiCard, CardSource> = {
 	mail: {
 		css: BASE_CSS + MAIL_CSS,
 		description: "Shows Gmail search results and conversations as plain text.",
-		img: "'none'",
 		js: SHARED_JS + MAIL_JS,
 		title: "GoBridge mail",
 	},
 	calendar: {
 		css: BASE_CSS + CALENDAR_CSS,
 		description: "Shows calendar events as a day view, as plain text.",
-		img: "'none'",
 		js: SHARED_JS + CALENDAR_JS,
 		title: "GoBridge calendar",
 	},
 	drive: {
 		css: BASE_CSS + DRIVE_CSS,
 		description: "Shows Drive files, sharing and activity as plain text.",
-		img: "'none'",
 		js: SHARED_JS + DRIVE_JS,
 		title: "GoBridge Drive",
 	},
 	workspace: {
 		css: BASE_CSS + WORKSPACE_CSS,
 		description: "Shows Docs, Sheets and Slides content as plain text, and a slide image GoBridge fetched.",
-		// The slide thumbnail arrives as MCP image content and is shown from a data: URL.
-		img: "data:",
 		js: SHARED_JS + WORKSPACE_JS,
 		title: "GoBridge Workspace",
 	},
 	accounts: {
 		css: BASE_CSS + ACCOUNTS_CSS,
 		description: "Shows the linked Google accounts.",
-		img: "'none'",
 		js: SHARED_JS + ACCOUNTS_JS,
 		linkUrl: true,
 		title: "GoBridge accounts",
@@ -133,14 +129,49 @@ export function ownerLinkUrl(env: Env): string {
 	}
 }
 
+/** PNG chunks a browser needs to draw the image. */
+const DRAWING_CHUNKS = new Set(["IHDR", "PLTE", "tRNS", "gAMA", "cHRM", "sRGB", "iCCP", "IDAT", "IEND"]);
+
+/**
+ * The PNG with only its drawing chunks, each copied whole (so its CRC still
+ * holds). The committed logo files carry a C2PA provenance manifest (caBX)
+ * that is about half their size and has no effect on the pixels; it is left
+ * out of the copy inlined into every card.
+ */
+export function drawablePng(bytes: Uint8Array): Uint8Array {
+	const view = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
+	const parts: Uint8Array[] = [bytes.subarray(0, 8)];
+	for (let at = 8; at + 12 <= bytes.length; ) {
+		const end = at + 12 + view.getUint32(at);
+		if (end > bytes.length) break;
+		if (DRAWING_CHUNKS.has(String.fromCharCode(...bytes.subarray(at + 4, at + 8)))) parts.push(bytes.subarray(at, end));
+		at = end;
+	}
+	const out = new Uint8Array(parts.reduce((sum, part) => sum + part.length, 0));
+	let offset = 0;
+	for (const part of parts) {
+		out.set(part, offset);
+		offset += part.length;
+	}
+	return out;
+}
+
+/** The 64 px logo as a data: URL, for the header of every card. Constant for a build. */
+export const LOGO_DATA_URL = (() => {
+	let binary = "";
+	for (const byte of drawablePng(new Uint8Array(logo64))) binary += String.fromCharCode(byte);
+	return `data:image/png;base64,${btoa(binary)}`;
+})();
+
 const built = new Map<string, Promise<string>>();
 
 /** The card's full HTML. Constant for a given build, UI_CARDS value and BASE_URL. */
 export function cardHtml(card: UiCard, env: Env): Promise<string> {
 	const source = CARDS[card];
-	// These two constants are the only things that vary: no account data.
+	// These constants are the only things that vary: no account data.
 	const constants = [
 		`var GB_WRITES=${uiCardsMode(env) === "all" ? "true" : "false"};`,
+		`var GB_LOGO=${JSON.stringify(LOGO_DATA_URL)};`,
 		...(source.linkUrl ? [`var GB_LINK_URL=${JSON.stringify(ownerLinkUrl(env))};`] : []),
 	].join("");
 	const key = `${card}|${constants}`;
@@ -152,12 +183,12 @@ export function cardHtml(card: UiCard, env: Env): Promise<string> {
 	return html;
 }
 
-async function buildCardHtml({ css, img, title }: CardSource, js: string): Promise<string> {
+async function buildCardHtml({ css, title }: CardSource, js: string): Promise<string> {
 	const policy = [
 		"default-src 'none'",
 		`script-src 'sha256-${await sha256Base64(js)}'`,
 		`style-src 'sha256-${await sha256Base64(css)}'`,
-		`img-src ${img}`,
+		"img-src data:",
 		"connect-src 'none'",
 		"base-uri 'none'",
 		"form-action 'none'",

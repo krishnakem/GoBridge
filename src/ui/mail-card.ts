@@ -9,34 +9,44 @@
  */
 
 export const MAIL_CSS = String.raw`
-.messages { display: flex; flex-direction: column; gap: 10px; padding: 12px 16px; }
-.bubble { border: 1px solid var(--line); border-radius: 12px; background: var(--bg-soft); overflow: hidden; }
+.messages { display: flex; flex-direction: column; gap: 6px; padding: 8px 12px 10px; }
+.bubble { border: 1px solid var(--line); border-radius: 8px; background: var(--bg); overflow: hidden; }
 .bubble-head {
 	all: unset;
 	box-sizing: border-box;
 	display: flex;
+	align-items: baseline;
 	justify-content: space-between;
-	gap: 12px;
+	gap: 8px;
 	width: 100%;
-	min-height: 36px;
-	padding: 8px 12px;
+	min-height: 30px;
+	padding: 6px 10px;
 	cursor: pointer;
 }
-.bubble-body { display: flex; flex-direction: column; gap: 10px; padding: 0 12px 12px; }
+.bubble-head:hover { background: var(--bg-soft); }
+.bubble-head > * { min-width: 0; }
+.bubble-head .muted { flex: none; }
+.bubble-body { display: flex; flex-direction: column; gap: 2px; padding: 0 10px 8px; min-width: 0; }
 .bubble-body[hidden] { display: none; }
-.file { border: 1px solid var(--line); border-radius: 8px; padding: 4px 8px; font-size: 12px; background: var(--bg); }
+.bubble-body .text { line-height: 1.45; }
+.preview .text { display: -webkit-box; -webkit-box-orient: vertical; -webkit-line-clamp: 2; line-clamp: 2; overflow: hidden; white-space: normal; }
+.file { border: 1px solid var(--line); border-radius: 6px; padding: 1px 6px; font-size: 11px; background: var(--bg); }
+.files { display: flex; gap: 4px; overflow: hidden; white-space: nowrap; }
 .unread .from { font-weight: 700; }
-.mail-row { display: flex; align-items: stretch; border-bottom: 1px solid var(--line); }
-.mail-row .item { border-bottom: 0; }
-.mail-pick { display: flex; align-items: center; padding: 0 0 0 16px; }
-.bulk { padding: 8px 16px; border-bottom: 1px solid var(--line); background: var(--bg-soft); font-size: 13px; font-weight: 600; }
-.swatch { flex: none; width: 12px; height: 12px; border-radius: 50%; background: var(--other-bg); border: 1px solid var(--line); }
-.label-row { display: flex; align-items: center; gap: 10px; min-height: 44px; padding: 4px 16px; border-bottom: 1px solid var(--line); }
+.mail-row { display: flex; align-items: center; min-width: 0; }
+.mail-row .item { flex: 1; width: auto; margin-left: 0; }
+.mail-pick { display: flex; align-items: center; flex: none; padding: 0 2px 0 12px; }
+.bulk { padding: 6px 12px; border-bottom: 1px solid var(--line); background: var(--bg); font-size: 12px; font-weight: 600; }
+.swatch { flex: none; width: 10px; height: 10px; border-radius: 50%; background: var(--bg-hover); border: 1px solid var(--line); }
+.label-row { display: flex; align-items: center; gap: 8px; min-height: 34px; padding: 2px 12px; border-bottom: 1px solid var(--line); }
+.label-row:last-of-type { border-bottom: 0; }
 .label-row .input { flex: 1; width: auto; }
-.pill { display: inline-flex; align-items: center; gap: 4px; border-radius: 999px; padding: 2px 4px 2px 10px; background: var(--other-bg); color: var(--other-fg); font-size: 12px; font-weight: 600; }
-.pill .btn-icon { min-height: 24px; min-width: 24px; padding: 0 3px; border: 0; background: none; color: inherit; }
-.pill .icon { width: 14px; height: 14px; }
-.quoted { border-left: 3px solid var(--line); margin: 0 16px 12px; padding: 4px 0 4px 10px; }
+.label-row .btn-icon { border-color: transparent; }
+.pill { display: inline-flex; align-items: center; gap: 2px; border-radius: 999px; padding: 1px 2px 1px 8px; background: var(--bg-hover); color: var(--fg); font-size: 11px; font-weight: 500; }
+.pill .btn-icon { min-height: 20px; min-width: 20px; padding: 0 2px; border: 0; background: none; color: inherit; }
+.pill .icon { width: 12px; height: 12px; }
+.quoted { border-left: 2px solid var(--line); margin: 0 12px 10px; padding: 2px 0 2px 8px; }
+.group { padding: 8px 12px 2px; font-size: 11px; font-weight: 600; color: var(--muted); }
 `;
 
 export const MAIL_JS = String.raw`
@@ -55,29 +65,44 @@ export const MAIL_JS = String.raw`
 		return row.children.length ? row : null;
 	}
 
-	function messageNode(message, open) {
+	/**
+	 * One message in a conversation. Closed: the sender and date only. Preview
+	 * (the newest message when the card opens): at most five rows, the sender
+	 * and date, who it went to, two lines of text and the attachments, each cut
+	 * with an ellipsis. Selecting the sender line shows the whole message, and
+	 * selecting it again closes it.
+	 */
+	function messageNode(message, preview) {
 		var body = el("div", "bubble-body");
 		var people = [message.to ? "To " + message.to : "", message.cc ? "Cc " + message.cc : ""].filter(Boolean).join(" · ");
-		if (people) body.appendChild(el("div", "muted", people));
+		if (people) body.appendChild(el("div", "muted clip", people));
 		var text = typeof message.body === "string" && message.body ? message.body : message.snippet;
 		if (text) body.appendChild(el("pre", "text", text));
-		if (message.bodyTruncated) body.appendChild(el("div", "muted", "This message is longer than shown here."));
+		var truncated = message.bodyTruncated ? el("div", "muted", "This message is longer than shown here.") : null;
+		if (truncated) body.appendChild(truncated);
 		var files = Array.isArray(message.attachments) ? message.attachments : [];
 		if (files.length) {
-			var list = el("div", "wrap");
+			var list = el("div", "files");
 			files.forEach(function (file) {
 				var size = formatSize(file.size);
 				list.appendChild(el("span", "file", (file.filename || "Attachment") + (size ? " · " + size : "")));
 			});
 			body.appendChild(list);
 		}
-		body.hidden = !open;
+		var bubble = el("div", "bubble" + (preview ? " preview" : ""));
+		if (truncated) truncated.hidden = !!preview;
+		body.hidden = !preview;
 		var toggle = button("", "bubble-head", function () {
-			body.hidden = !body.hidden;
+			var full = !body.hidden && bubble.className === "bubble";
+			bubble.className = "bubble";
+			body.hidden = full;
+			if (truncated) truncated.hidden = false;
 		});
-		toggle.appendChild(el("span", "strong", message.from || "Unknown sender"));
+		toggle.appendChild(el("span", "strong clip", message.from || "Unknown sender"));
 		toggle.appendChild(el("span", "muted", formatDate(message.date)));
-		return el("div", "bubble", null, toggle, body);
+		bubble.appendChild(toggle);
+		bubble.appendChild(body);
+		return bubble;
 	}
 
 	App.view("get_thread", function (parsed, args, account) {
@@ -99,7 +124,7 @@ export const MAIL_JS = String.raw`
 			messages.forEach(function (message, index) {
 				list.appendChild(messageNode(message, index === messages.length - 1));
 			});
-			var top = el("div", "pad stack", null, el("div", "title", subject || "Conversation"), el("div", "muted", plural(count, "message")), labelTags(labels));
+			var top = el("div", "pad stack", null, el("div", "title clip", subject || "Conversation"), el("div", "row", null, el("span", "muted", plural(count, "message")), labelTags(labels)));
 			var last = messages[messages.length - 1];
 			var threadId = data.threadId || args.threadId;
 			var target = subject ? clip(subject, 80) : "This conversation";
@@ -364,7 +389,8 @@ export const MAIL_JS = String.raw`
 						null,
 						el("span", "from clip grow", thread.from || "Conversation"),
 						el("span", "muted", [formatDate(thread.lastDate), count > 1 ? plural(count, "message") : ""].filter(Boolean).join(" · ")),
-						row.account ? accountChip(row.account) : null
+						// The header names the account; rows only say which once other accounts are mixed in.
+						row.account && state.others && state.others.length ? accountChip(row.account) : null
 					)
 				);
 				if (thread.subject) item.appendChild(el("div", "clip", thread.subject));
@@ -588,9 +614,9 @@ export const MAIL_JS = String.raw`
 				"div",
 				"quoted stack",
 				null,
-				el("div", "strong", clip(subject || "(no subject)", 120)),
-				el("div", "muted", "From " + clip(message.from || "unknown sender", 120)),
-				el("pre", "text", clip(message.body || message.snippet || "", 600))
+				el("div", "strong clip", clip(subject || "(no subject)", 120)),
+				el("div", "muted clip", "From " + clip(message.from || "unknown sender", 120)),
+				moreText(clip(message.body || message.snippet || "", 600), 2)
 			);
 			var files = Array.isArray(message.attachments) ? message.attachments.length : 0;
 			App.draw({
@@ -709,7 +735,7 @@ export const MAIL_JS = String.raw`
 				if (editable) {
 					content = el("div", "form", null, field("To", to), field("Cc", cc), field("Subject", subject), hasBody ? field("Message", body) : el("div", "muted", data.snippet ? "Starts: " + data.snippet : "The message text was not included in this result, so it cannot be edited here."), status);
 				} else {
-					content = el("div", "pad stack", null, el("div", "pairs", null, pair("To", saved.to || "(nobody yet)"), pair("Cc", saved.cc || "(nobody)"), pair("Subject", saved.subject || "(no subject)")), el("pre", "text", hasBody ? saved.body : data.snippet || ""));
+					content = el("div", "pad stack", null, el("div", "pairs", null, pair("To", saved.to || "(nobody yet)"), pair("Cc", saved.cc || "(nobody)"), pair("Subject", saved.subject || "(no subject)")), moreText(hasBody ? saved.body : data.snippet || "", 2));
 				}
 				var recipients = [saved.to, saved.cc].filter(Boolean).join(", ");
 				App.draw({

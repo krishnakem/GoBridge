@@ -31,8 +31,8 @@ import logoSvg from "../assets/logo/logo.svg";
 export const APP_CSS = `*,*::before,*::after{box-sizing:border-box}
 html{-webkit-text-size-adjust:100%}
 [hidden]{display:none!important}
-body{margin:0;background:#fff;color:#18181b;font-family:system-ui,-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,"Helvetica Neue",Arial,sans-serif;font-size:14px;line-height:1.5;-webkit-font-smoothing:antialiased;-moz-osx-font-smoothing:grayscale}
-code,.mono{font-family:ui-monospace,SFMono-Regular,"SF Mono",Menlo,Consolas,monospace;font-size:.92em}
+body{margin:0;background:#fff;color:#18181b;font-family:-apple-system,BlinkMacSystemFont,"SF Pro Text","Segoe UI",system-ui,sans-serif;font-size:14px;line-height:1.5;-webkit-font-smoothing:antialiased;-moz-osx-font-smoothing:grayscale}
+code,.mono{font-family:ui-monospace,"SF Mono",Menlo,monospace;font-size:.92em}
 a{color:#0369a1}
 h1{font-size:20px;font-weight:600;letter-spacing:-.01em;margin:0 0 16px}
 h2{font-size:15px;font-weight:600;margin:32px 0 8px}
@@ -92,12 +92,12 @@ table{width:100%;border-collapse:collapse;font-size:14px}
 th{font-size:12px;font-weight:500;color:#71717a;text-align:left;padding:8px 16px 8px 0;border-bottom:1px solid #e4e4e7;white-space:nowrap}
 td{padding:10px 16px 10px 0;border-bottom:1px solid #f4f4f5;vertical-align:top;overflow-wrap:break-word}
 td:last-child,th:last-child{padding-right:0}
-.notice,.warn{padding:10px 12px;border-radius:6px;border:1px solid #e4e4e7;background:#f0f9ff;color:#0369a1;margin:0 0 16px}
+.notice,.warn{padding:10px 12px;border-radius:8px;border:1px solid #e4e4e7;background:#f0f9ff;color:#0369a1;margin:0 0 16px}
 .warn{background:#fff;border-color:#dc2626;color:#b91c1c}
 .badge{display:inline-block;padding:1px 8px;border-radius:9999px;background:#f4f4f5;color:#52525b;font-size:12px;white-space:nowrap}
 .badge-ok{background:#f0f9ff;color:#0369a1}
 .badge-alert{background:#fff;color:#b91c1c;box-shadow:inset 0 0 0 1px #dc2626}
-.btn,button{display:inline-flex;align-items:center;justify-content:center;height:32px;padding:0 12px;border:1px solid #e4e4e7;border-radius:6px;background:#fff;color:#27272a;font:inherit;font-size:14px;font-weight:500;text-decoration:none;cursor:pointer}
+.btn,button{display:inline-flex;align-items:center;justify-content:center;height:32px;padding:0 12px;border:1px solid #e4e4e7;border-radius:8px;background:#fff;color:#27272a;font:inherit;font-size:14px;font-weight:500;text-decoration:none;cursor:pointer}
 .btn:hover,button:hover{background:#fafafa}
 .btn:focus-visible,button:focus-visible,input:focus-visible,select:focus-visible,summary:focus-visible,a:focus-visible{outline:2px solid #0284c7;outline-offset:2px}
 .btn-primary{background:#0284c7;border-color:#0284c7;color:#fff}
@@ -110,9 +110,9 @@ form.inline input[type=text]{width:8rem;margin-right:4px}
 .account-cell{display:inline-flex;align-items:center;gap:8px;max-width:100%}
 .account-cell .avatar{flex:none}
 .field{display:flex;flex-wrap:wrap;align-items:center;gap:8px;margin:0 0 12px}
-input[type=text],input[type=url]{height:32px;width:14rem;max-width:100%;padding:0 10px;border:1px solid #e4e4e7;border-radius:6px;font:inherit;color:#18181b}
+input[type=text],input[type=url]{height:32px;width:14rem;max-width:100%;padding:0 10px;border:1px solid #e4e4e7;border-radius:8px;font:inherit;color:#18181b}
 input[type=url]{width:28rem}
-select{height:32px;max-width:100%;padding:0 8px;border:1px solid #e4e4e7;border-radius:6px;background:#fff;font:inherit;color:#18181b}
+select{height:32px;max-width:100%;padding:0 8px;border:1px solid #e4e4e7;border-radius:8px;background:#fff;font:inherit;color:#18181b}
 label{font-size:13px;color:#52525b}
 .check{display:flex;align-items:flex-start;gap:8px;font-size:13px;color:#27272a}
 .check input{margin-top:3px}
@@ -124,7 +124,7 @@ label{font-size:13px;color:#52525b}
 
 /* Cards: linked accounts, AI clients, allowed URLs, usage */
 .cards{display:grid;grid-template-columns:repeat(auto-fill,minmax(260px,1fr));gap:12px;margin:0 0 12px}
-.card{position:relative;display:flex;flex-direction:column;gap:12px;min-width:0;padding:16px;border:1px solid #e4e4e7;border-radius:10px;background:#fff}
+.card{position:relative;display:flex;flex-direction:column;gap:12px;min-width:0;padding:16px;border:1px solid #e4e4e7;border-radius:12px;background:#fff}
 .card form{margin:0}
 .card-alert{border-color:#fca5a5}
 .card-empty{background:#fafafa}
@@ -133,15 +133,18 @@ label{font-size:13px;color:#52525b}
 .card-click{transition:border-color .1s}
 .card-click:hover{border-color:#a1a1aa}
 .card-link{color:inherit;text-decoration:none}
-.card-link::after{content:"";position:absolute;inset:0;border-radius:10px}
+.card-link::after{content:"";position:absolute;inset:0;border-radius:12px}
 .card-link:focus-visible{outline:none}
 .card-link:focus-visible::after{outline:2px solid #0284c7;outline-offset:2px}
 .card-click .icon-btn,.card-click form,.card-click details,.card-click time{position:relative;z-index:1}
 /* The "+" card: a <details> whose summary is the whole card until it is opened */
 .card-add{border-style:dashed}
-.card-add>summary{display:flex;flex-direction:column;align-items:center;justify-content:center;gap:6px;min-height:76px;border-radius:6px;color:#52525b;font-weight:500;cursor:pointer}
-.card-add>summary:hover{color:#18181b}
-.card-add[open]>summary{flex-direction:row;justify-content:flex-start;min-height:0;padding:4px 6px}
+.card-add>summary,.card-add>.add-face{flex:1;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:6px;min-height:76px;text-align:center;border-radius:8px;color:#52525b;font-weight:500;cursor:pointer}
+.card-add>summary:hover,.card-add:hover>.add-face{color:#18181b}
+/* The same card as a link (Add a new AI client): no underline, the usual focus ring */
+a.card-add{color:inherit;text-decoration:none}
+a.card-add:focus-visible{outline:2px solid #0284c7;outline-offset:2px}
+.card-add[open]>summary{flex:none;flex-direction:row;justify-content:flex-start;min-height:0;padding:4px 6px}
 .plus .icon{width:28px;height:28px}
 .card-add[open] .plus .icon{width:18px;height:18px}
 .status{display:inline-flex;align-items:center;gap:6px;font-size:12px;color:#52525b;white-space:nowrap}
@@ -158,7 +161,7 @@ label{font-size:13px;color:#52525b}
 .card-foot .push{margin-left:auto}
 .card .field{margin:0}
 .card input[type=text],.card input[type=url]{flex:1;width:auto;min-width:0}
-.icon-btn{display:flex;align-items:center;justify-content:center;flex:none;width:28px;height:28px;padding:0;border:0;border-radius:6px;background:none;color:#71717a;cursor:pointer}
+.icon-btn{display:flex;align-items:center;justify-content:center;flex:none;width:28px;height:28px;padding:0;border:0;border-radius:8px;background:none;color:#71717a;cursor:pointer}
 .icon-btn .icon{width:16px;height:16px}
 .icon-btn:hover{background:#fafafa;color:#18181b}
 .icon-btn:focus-visible{outline:2px solid #0284c7;outline-offset:2px}
@@ -184,7 +187,7 @@ label{font-size:13px;color:#52525b}
 .row-details>summary{cursor:pointer;color:#0369a1;font-size:13px}
 .row-details>div{margin-top:4px;overflow-wrap:anywhere}
 /* Settings sections */
-.panel{margin:0 0 16px;padding:16px;border:1px solid #e4e4e7;border-radius:10px}
+.panel{margin:0 0 16px;padding:16px;border:1px solid #e4e4e7;border-radius:12px}
 .panel>h2{margin:0 0 8px}
 .filters{display:flex;flex-wrap:wrap;align-items:flex-end;gap:8px 12px;margin:0 0 12px}
 .filters label{display:grid;gap:2px}
@@ -200,7 +203,27 @@ label{font-size:13px;color:#52525b}
 .modal-section{padding:16px 0;border-top:1px solid #f4f4f5}
 .modal-section:last-child{padding-bottom:0}
 .modal-section h3{margin:0 0 10px}
+.section-head{display:flex;align-items:center;justify-content:space-between;gap:8px;margin:0 0 10px}
+.section-head h3{margin:0}
+.pager{display:flex;align-items:center;gap:4px}
+.pager .icon-btn{border:1px solid #e4e4e7}
+.pager .icon-btn:disabled{opacity:.4;cursor:default;background:none}
+.pager-count{min-width:56px;text-align:center;font-variant-numeric:tabular-nums}
 .modal-section form{margin:0}
+/* Dialogs kept in the page: closed until opened by menu.js (.open) or, without it, by #id (:target) */
+.dialog{display:none}
+.dialog.open,html:not(.js) .dialog:target{display:block}
+.copy-row{display:flex;gap:8px;margin:0 0 16px}
+.copy-row input{flex:1;width:auto;min-width:0;font-family:ui-monospace,"SF Mono",Menlo,monospace;font-size:13px;background:#fafafa}
+.segmented{display:flex;gap:2px;padding:2px;margin:0 0 12px;border-radius:8px;background:#f4f4f5}
+.segmented button{flex:1;height:28px;padding:0 8px;border:0;border-radius:6px;background:none;color:#52525b;font-size:13px}
+.segmented button:hover{background:none;color:#18181b}
+.segmented button[aria-selected=true]{background:#fff;color:#18181b;box-shadow:0 1px 2px rgba(24,24,27,.12)}
+.setup-app{margin:12px 0 6px}
+.tabbed .setup-app{display:none}
+.setup-steps{display:grid;gap:6px;margin:0;padding-left:20px;font-size:14px}
+.setup-steps code{overflow-wrap:anywhere}
+.setup-foot{margin:16px 0 0;padding-top:12px;border-top:1px solid #f4f4f5}
 .modal-section .confirm[open]{flex-basis:100%}
 .list-foot{display:flex;flex-wrap:wrap;align-items:center;gap:8px 12px;margin-top:12px}
 .rows{display:grid;gap:12px;margin:0;padding:0;list-style:none}
@@ -293,6 +316,171 @@ export const MENU_JS = `(function () {
 		// put focus back there.
 		target.focus();
 	}
+
+	// Dialogs kept in the page ("Add a new AI client"): open and close in place,
+	// so closing leaves the page exactly as it was (no reload, no address
+	// change). The page behind is inert while one is open. Without this
+	// script the dialog still opens and closes through its #id (CSS :target).
+	if (document.documentElement) document.documentElement.className += " js";
+	var dialogs = document.querySelectorAll("[data-dialog]");
+	Array.prototype.forEach.call(dialogs, function (dialog) {
+		var box = dialog.querySelector("[role=dialog]");
+		var opener = document.querySelector("[data-dialog-open=" + dialog.id + "]");
+		var behind = document.querySelectorAll(".shell, .tabbar");
+		var wasInert = [];
+		var isOpen = false;
+		if (!box) return;
+		function open() {
+			if (isOpen) return;
+			isOpen = true;
+			wasInert = Array.prototype.map.call(behind, function (el) {
+				var before = el.hasAttribute("inert");
+				el.setAttribute("inert", "");
+				return before;
+			});
+			dialog.className = "dialog open";
+			box.focus();
+		}
+		function close() {
+			if (!isOpen) return;
+			isOpen = false;
+			dialog.className = "dialog";
+			Array.prototype.forEach.call(behind, function (el, i) {
+				if (!wasInert[i]) el.removeAttribute("inert");
+			});
+			if (opener) opener.focus();
+		}
+		if (opener) {
+			opener.addEventListener("click", function (event) {
+				event.preventDefault();
+				open();
+			});
+		}
+		Array.prototype.forEach.call(dialog.querySelectorAll("[data-dialog-close]"), function (link) {
+			link.addEventListener("click", function (event) {
+				event.preventDefault();
+				close();
+			});
+		});
+		document.addEventListener("keydown", function (event) {
+			if (!isOpen || event.key !== "Escape" || event.defaultPrevented) return;
+			event.preventDefault();
+			close();
+		});
+
+		// Copy: puts the field's value on the clipboard; the button says
+		// "Copied" for two seconds.
+		var copy = dialog.querySelector("[data-copy]");
+		var field = copy ? document.getElementById(copy.getAttribute("data-copy")) : null;
+		if (copy && field) {
+			var timer = 0;
+			copy.hidden = false;
+			field.addEventListener("focus", function () {
+				field.select();
+			});
+			copy.addEventListener("click", function () {
+				function show(text) {
+					copy.textContent = text;
+					clearTimeout(timer);
+					timer = setTimeout(function () {
+						copy.textContent = "Copy";
+					}, 2000);
+				}
+				function done() {
+					show("Copied");
+				}
+				// The browser refused: leave the URL selected and say how to copy it.
+				function fallback() {
+					field.select();
+					var copied = false;
+					try {
+						copied = document.execCommand("copy");
+					} catch (e) {}
+					show(copied ? "Copied" : "Press \u2318C");
+				}
+				if (navigator.clipboard && navigator.clipboard.writeText) navigator.clipboard.writeText(field.value).then(done, fallback);
+				else fallback();
+			});
+		}
+
+		// App tabs: one app's steps at a time. Arrow keys, Home and End move
+		// between tabs (and do not reach other arrow-key handlers).
+		var tablist = dialog.querySelector("[data-setup-tabs]");
+		var tabs = tablist ? tablist.querySelectorAll("[role=tab]") : [];
+		function select(index, focus) {
+			Array.prototype.forEach.call(tabs, function (tab, i) {
+				var on = i === index;
+				tab.setAttribute("aria-selected", on ? "true" : "false");
+				tab.tabIndex = on ? 0 : -1;
+				var panel = document.getElementById(tab.getAttribute("aria-controls"));
+				if (panel) panel.hidden = !on;
+			});
+			if (focus) tabs[index].focus();
+		}
+		if (tabs.length) {
+			tablist.hidden = false;
+			box.className += " tabbed";
+			Array.prototype.forEach.call(tabs, function (tab, i) {
+				tab.addEventListener("click", function () {
+					select(i, false);
+				});
+				tab.addEventListener("keydown", function (event) {
+					var to = event.key === "ArrowRight" ? i + 1 : event.key === "ArrowLeft" ? i - 1 : event.key === "Home" ? 0 : event.key === "End" ? tabs.length - 1 : null;
+					if (to === null) return;
+					event.preventDefault();
+					event.stopPropagation();
+					select((to + tabs.length) % tabs.length, true);
+				});
+			});
+			select(0, false);
+		}
+
+		// Arrived with the dialog's #id in the address: open it the scripted way.
+		if (window.location.hash === "#" + dialog.id) {
+			history.replaceState(null, "", window.location.pathname + window.location.search);
+			open();
+		}
+	});
+
+	// One-at-a-time lists (an AI client's registrations): the arrows, the
+	// "2 of 15" counter, and the left and right arrow keys while it is shown.
+	// Only the hidden flag, disabled state and counter text change.
+	var pagers = document.querySelectorAll("[data-pager]");
+	Array.prototype.forEach.call(pagers, function (root) {
+		var pages = root.querySelectorAll("[data-page]");
+		var prev = root.querySelector("[data-page-prev]");
+		var next = root.querySelector("[data-page-next]");
+		var count = root.querySelector("[data-page-count]");
+		if (pages.length < 2 || !prev || !next || !count) return;
+		var at = 0;
+		function show(index) {
+			if (index < 0 || index >= pages.length) return;
+			at = index;
+			Array.prototype.forEach.call(pages, function (page, i) {
+				page.hidden = i !== at;
+			});
+			prev.disabled = at === 0;
+			next.disabled = at === pages.length - 1;
+			count.textContent = at + 1 + " of " + pages.length;
+			// A button that just became disabled cannot keep focus: hand it over.
+			if (document.activeElement === prev && prev.disabled) next.focus();
+			if (document.activeElement === next && next.disabled) prev.focus();
+		}
+		prev.addEventListener("click", function () {
+			show(at - 1);
+		});
+		next.addEventListener("click", function () {
+			show(at + 1);
+		});
+		document.addEventListener("keydown", function (event) {
+			if (event.defaultPrevented || event.altKey || event.ctrlKey || event.metaKey || event.shiftKey) return;
+			if (event.key !== "ArrowLeft" && event.key !== "ArrowRight") return;
+			var target = event.target;
+			if (target && target.closest && target.closest("input, textarea, select, [contenteditable]")) return;
+			event.preventDefault();
+			show(event.key === "ArrowLeft" ? at - 1 : at + 1);
+		});
+	});
 
 	// Inline rename on an account card: the pencil turns the alias into a text
 	// field. Enter asks for confirmation, Enter again (or the Rename button)
