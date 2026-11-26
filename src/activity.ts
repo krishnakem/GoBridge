@@ -168,46 +168,65 @@ export async function clientStats(
 	return stats;
 }
 
-/** The newest writes matching the filter (AI clients' writes only, not the owner's own actions). */
-export async function recentWrites(
-	env: Env,
-	filter: ActivityFilter,
-	limit: number,
-): Promise<AuditEntry[]> {
-	const clause = filterClause(filter);
-	const { results } = await env.AUDIT_DB.prepare(
-		`SELECT * FROM audit_writes WHERE client_id != ? AND ${clause.sql} ORDER BY ts DESC, id DESC LIMIT ?`,
-	)
-		.bind(OWNER_CLIENT_ID, ...clause.binds, limit)
-		.all<AuditRow>();
-	return results.map((row) => auditEntryFrom(row, "write"));
+export type ActivityOptions = ActivityFilter & {
+	/** Include reads (audit_reads) as well as writes. */
+	reads: boolean;
+	/** Leave out the owner's own actions (renames, revokes, ...): AI clients' rows only. */
+	clientsOnly?: boolean;
+};
+
+/** The SELECT behind every activity list, count and export, so they can never disagree. */
+function activitySelect(options: ActivityOptions): Clause {
+	const filter = filterClause(options);
+	const where = options.clientsOnly ? `client_id != ? AND ${filter.sql}` : filter.sql;
+	const binds = options.clientsOnly ? [OWNER_CLIENT_ID, ...filter.binds] : filter.binds;
+	const select = (table: string, kind: string, meta: string, count: string) =>
+		`SELECT '${kind}' AS kind, id, ts, alias, client_id, client_name, tool, outcome, ${meta} AS meta, ${count} AS result_count FROM ${table} WHERE ${where}`;
+	return options.reads
+		? {
+				binds: [...binds, ...binds],
+				sql: `${select("audit_writes", "write", "meta", "NULL")} UNION ALL ${select("audit_reads", "read", "NULL", "result_count")}`,
+			}
+		: { binds, sql: select("audit_writes", "write", "meta", "NULL") };
 }
 
-export const ACTIVITY_PAGE_SIZE = 50;
-/** Deepest page offered: 200 pages of 50. Older rows are still in D1 until the 90-day cleanup. */
-export const ACTIVITY_MAX_PAGE = 200;
-
-/**
- * One page of "All activity", newest first: every write (the owner's own
- * actions included) and, when asked, reads. `page` starts at 1.
- */
-export async function activityPage(
+/** Activity rows matching the options, newest first. */
+export async function listActivity(
 	env: Env,
-	options: ActivityFilter & { reads: boolean; page: number },
-): Promise<{ entries: AuditEntry[]; hasNext: boolean }> {
-	const clause = filterClause(options);
-	const page = Math.min(Math.max(1, Math.floor(options.page) || 1), ACTIVITY_MAX_PAGE);
-	const select = (table: string, kind: string, meta: string, count: string) =>
-		`SELECT '${kind}' AS kind, id, ts, alias, client_id, client_name, tool, outcome, ${meta} AS meta, ${count} AS result_count FROM ${table} WHERE ${clause.sql}`;
-	const sql = options.reads
-		? `${select("audit_writes", "write", "meta", "NULL")} UNION ALL ${select("audit_reads", "read", "NULL", "result_count")}`
-		: select("audit_writes", "write", "meta", "NULL");
-	const binds = options.reads ? [...clause.binds, ...clause.binds] : clause.binds;
-	const { results } = await env.AUDIT_DB.prepare(`${sql} ORDER BY ts DESC, id DESC LIMIT ? OFFSET ?`)
-		.bind(...binds, ACTIVITY_PAGE_SIZE + 1, (page - 1) * ACTIVITY_PAGE_SIZE)
+	options: ActivityOptions & { limit: number; offset?: number },
+): Promise<AuditEntry[]> {
+	const select = activitySelect(options);
+	const { results } = await env.AUDIT_DB.prepare(`${select.sql} ORDER BY ts DESC, id DESC LIMIT ? OFFSET ?`)
+		.bind(...select.binds, options.limit, options.offset ?? 0)
 		.all<AuditRow & { kind: "write" | "read" }>();
-	return {
-		entries: results.slice(0, ACTIVITY_PAGE_SIZE).map((row) => auditEntryFrom(row, row.kind)),
-		hasNext: results.length > ACTIVITY_PAGE_SIZE && page < ACTIVITY_MAX_PAGE,
-	};
+	return results.map((row) => auditEntryFrom(row, row.kind));
+}
+
+/** How many rows match the options. */
+export async function countActivity(env: Env, options: ActivityOptions): Promise<number> {
+	const select = activitySelect(options);
+	const row = await env.AUDIT_DB.prepare(`SELECT COUNT(*) AS n FROM (${select.sql})`)
+		.bind(...select.binds)
+		.first<{ n: number }>();
+	return Number(row?.n) || 0;
+}
+
+/** Rows read per query when exporting, and the most rows one export returns. */
+const EXPORT_BATCH = 5000;
+export const EXPORT_MAX_ROWS = 200_000;
+
+/** Every row matching the options, newest first, for a CSV export. */
+export async function allActivity(env: Env, options: ActivityOptions, batch = EXPORT_BATCH): Promise<AuditEntry[]> {
+	const rows: AuditEntry[] = [];
+	while (rows.length < EXPORT_MAX_ROWS) {
+		const page = await listActivity(env, { ...options, limit: batch, offset: rows.length });
+		rows.push(...page);
+		if (page.length < batch) break;
+	}
+	return rows;
+}
+
+/** The newest writes by AI clients matching the filter (not the owner's own actions). */
+export function recentWrites(env: Env, filter: ActivityFilter, limit: number): Promise<AuditEntry[]> {
+	return listActivity(env, { ...filter, clientsOnly: true, limit, reads: false });
 }
