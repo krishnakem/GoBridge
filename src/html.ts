@@ -266,9 +266,9 @@ export function renderOwnerPage(options: {
 	attention: Attention;
 	bodyHtml: string;
 	/**
-	 * A detail view drawn over the page (see drawerHtml). While it is shown
+	 * A detail view drawn over the page (see modalHtml). While it is shown
 	 * the page behind is `inert`: it cannot be clicked, focused or read by a
-	 * screen reader, so keyboard focus stays in the drawer without any script.
+	 * screen reader, so keyboard focus stays in the modal without any script.
 	 */
 	overlayHtml?: string;
 }): Response {

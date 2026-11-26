@@ -7,6 +7,7 @@
  *   POST /settings/allowed-clients         allow one redirect URL     (session + CSRF)
  *   POST /settings/allowed-clients/remove  remove one redirect URL    (session + CSRF)
  *   GET  /audit           owner-only redirect to All activity on /settings
+ *   GET  /export.csv      owner-only CSV of one data list (?table=...), same filters as its page
  *   POST /logout          end the owner session (session + CSRF); other methods get 405
  *   GET  /signed-out      public "Signed out" notice with a Sign in button
  *
@@ -17,12 +18,12 @@ import type { OAuthHelpers } from "@cloudflare/workers-oauth-provider";
 import { Hono } from "hono";
 import { type AccountInfo, ALIAS_PATTERN } from "./accounts";
 import {
-	ACTIVITY_MAX_PAGE,
-	type ActivityFilter,
-	activityPage,
+	type ActivityOptions,
 	aliasSpans,
+	allActivity,
+	countActivity,
+	listActivity,
 	OWNER_CLIENT_ID,
-	recentWrites,
 } from "./activity";
 import {
 	addAllowedRedirect,
@@ -43,18 +44,25 @@ import {
 import { clientLogoHtml } from "./client-logos";
 import {
 	clientCardsHtml,
-	drawerHtml,
 	errorCardHtml,
+	exportHref,
+	type ExportTable,
+	groupAllowed,
 	groupBadgesHtml,
 	groupLogoHtml,
+	listFootHtml,
+	loadAccountClientRows,
 	loadGroupActivity,
 	loadOrNull,
+	modalHtml,
 	revokeFormHtml,
+	ROW_LIMIT,
 	statusHtml,
 	timeHtml,
 	usageMetersHtml,
 	writeLineHtml,
 } from "./components";
+import { csvDocument, csvResponse } from "./csv";
 import {
 	type AuditEntry,
 	dailySendCap,
@@ -92,6 +100,7 @@ const app = new Hono<{ Bindings: Bindings }>();
 
 const OWNER_PATHS: readonly OwnerPath[] = ["/clients", "/settings", "/link"];
 
+
 // A failed load never shows a blank page or a raw error.
 app.onError((_error, c) => {
 	console.error(`${c.req.method} ${c.req.routePath} error: internal`);
@@ -114,7 +123,8 @@ const fallbackAttention = (env: Env): Attention => ({ relink: [], writesOff: !wr
 const plural = (count: number, word: string) => `${count} ${word}${count === 1 ? "" : "s"}`;
 const day = (seconds?: number) => (seconds ? new Date(seconds * 1000).toISOString().slice(0, 10) : "");
 
-function auditDetails(entry: AuditEntry): string {
+/** The body-free facts recorded with one audit row, as plain text lines. */
+function auditDetailParts(entry: AuditEntry): string[] {
 	const meta = entry.meta ?? {};
 	const parts: string[] = [];
 	if (meta.recipients?.length) parts.push(`To: ${meta.recipients.join(", ")}`);
@@ -155,8 +165,10 @@ function auditDetails(entry: AuditEntry): string {
 	if (meta.grantCount !== undefined) parts.push(`Connections removed: ${meta.grantCount}`);
 	if (meta.remainingCount) parts.push(`Could not remove: ${meta.remainingCount}`);
 	if (meta.resultCount !== undefined) parts.push(`Items returned: ${meta.resultCount}`);
-	return parts.map(escapeHtml).join("<br>");
+	return parts;
 }
+
+const auditDetails = (entry: AuditEntry) => auditDetailParts(entry).map(escapeHtml).join("<br>");
 
 // The old Recent writes page. Its content is now "All activity" on /settings;
 // the address still works for the owner and shows nothing to anyone else.
@@ -193,26 +205,37 @@ function redirectCell(uris: readonly string[], allowed: string[] | null): string
 		.join("\n");
 }
 
+/** AI clients' writes by one app: what its detail view lists and its CSV exports. */
+const clientWrites = (group: ClientGroup): ActivityOptions => ({
+	clientIds: group.clients.map((client) => client.clientId),
+	clientsOnly: true,
+	reads: false,
+});
+
 /** The client detail view: recent writes, the underlying connections, and Revoke. */
-async function clientDrawerHtml(
+async function clientModalHtml(
 	env: Env,
 	group: ClientGroup,
 	allowed: string[] | null,
 	csrf: string,
 ): Promise<string> {
+	const options = clientWrites(group);
 	const writes = await loadOrNull(
-		recentWrites(env, { clientIds: group.clients.map((client) => client.clientId) }, 20),
+		Promise.all([listActivity(env, { ...options, limit: ROW_LIMIT }), countActivity(env, options)]),
 	);
 	const writesHtml =
 		writes === null
 			? errorCardHtml("this client's recent writes", `/clients?open=${group.key}`)
-			: writes.length
-				? `<ul class="rows">
-${writes.map((entry) => `<li class="row"><div class="row-main">${writeLineHtml(entry)}</div></li>`).join("\n")}
-</ul>
-<p class="muted small">Account, action and time only. Recipients and subjects are under All activity in <a href="/settings#activity">Settings</a>.</p>`
-				: '<p class="muted">No writes in the last 90 days.</p>';
+			: `${
+					writes[0].length
+						? `<ul class="rows">
+${writes[0].map((entry) => `<li class="row"><div class="row-main">${writeLineHtml(entry)}</div></li>`).join("\n")}
+</ul>`
+						: '<p class="muted">No writes in the last 90 days.</p>'
+				}
+${listFootHtml(exportHref("client-writes", { client: group.key }), writes[1])}`;
 	const connections = group.clients
+		.slice(0, ROW_LIMIT)
 		.map((client) => {
 			const grants = group.grants.filter((grant) => grant.clientId === client.clientId);
 			return `<li><dl class="info-panel">
@@ -224,26 +247,26 @@ ${writes.map((entry) => `<li class="row"><div class="row-main">${writeLineHtml(e
 </dl></li>`;
 		})
 		.join("\n");
-	return drawerHtml({
+	return modalHtml({
 		bodyHtml: `${
 			group.unverified
 				? '<p class="warn">This app registered under a well-known name, but its redirect URLs are not that company\'s. Treat it as an unknown app.</p>'
 				: ""
-		}<section class="drawer-section">
+		}<section class="modal-section">
 <h3>Recent writes</h3>
 ${writesHtml}
 </section>
-<section class="drawer-section">
+<section class="modal-section">
 <h3>${plural(group.clients.length, "connection")}</h3>
 <ul class="rows connections">
 ${connections}
 </ul>
+${listFootHtml(exportHref("client-connections", { client: group.key }), group.clients.length)}
 </section>
-<section class="drawer-section">
-<h3>Revoke</h3>
+<section class="modal-section">
 ${revokeFormHtml(group, csrf)}
 </section>`,
-		closeHref: "/clients",
+		closeHref: `/clients#app-${group.key}`,
 		leadHtml: groupLogoHtml(group),
 		subHtml: `${groupBadgesHtml(group, allowed)} <span class="muted">${group.brand ? "Verified by its redirect URLs" : `Name chosen by the app · ${escapeHtml(group.hosts.join(", ") || "no redirect URL")}`}</span>`,
 		title: group.label,
@@ -281,7 +304,6 @@ app.get("/clients", async (c) => {
 		active: "/clients",
 		attention: status?.attention ?? fallbackAttention(c.env),
 		bodyHtml: `${notice ? `<p class="notice">${escapeHtml(notice)}</p>` : ""}${leftover}
-<p class="muted">One card per app. An app that was added more than once shows as one card with several connections. A name is chosen by the app itself, so only apps whose redirect URLs prove who they are get a logo; an app can connect only when all its redirect URLs are on the allowed list in <a href="/settings">Settings</a>.</p>
 ${
 	directory
 		? clientCardsHtml(groups, { activity, allowed, csrf: session.csrf })
@@ -289,7 +311,7 @@ ${
 ${errorCardHtml("your AI clients", "/clients")}
 </div>`
 }`,
-		overlayHtml: open ? await clientDrawerHtml(c.env, open, allowed, session.csrf) : undefined,
+		overlayHtml: open ? await clientModalHtml(c.env, open, allowed, session.csrf) : undefined,
 		session,
 		title: "AI clients",
 	});
@@ -464,29 +486,63 @@ ${clientLogoHtml([uri], hostOf(uri))}
 <button class="btn-primary" type="submit">Allow</button>
 </form>
 </div>
-</div>
-<p class="muted small">Exact URLs only, no wildcards. Loopback URLs (<code>localhost</code>, <code>127.0.0.1</code>) match on any port, for apps such as Claude Code. At most ${MAX_ALLOWED_REDIRECTS} URLs.</p>`;
+</div>`;
 }
 
 /** What the All activity filters accept, after validation. Unknown values are dropped, never echoed. */
-type ActivityQuery = { group?: ClientGroup; owner: boolean; account?: string; reads: boolean; page: number };
+type ActivityQuery = { group?: ClientGroup; owner: boolean; account?: string; reads: boolean };
 
-function activityHref(query: ActivityQuery, page: number): string {
-	const params = new URLSearchParams();
-	if (query.group) params.set("client", query.group.key);
-	else if (query.owner) params.set("client", "owner");
-	if (query.account) params.set("account", query.account);
-	if (query.reads) params.set("reads", "show");
-	if (page > 1) params.set("page", String(page));
-	const search = params.toString();
-	return `/settings${search ? `?${search}` : ""}#activity`;
+/** Reads the filters from a request. Each value must be one GoBridge already knows. */
+function activityQuery(
+	query: (name: string) => string | undefined,
+	groups: readonly ClientGroup[] | null,
+	accounts: readonly AccountInfo[],
+): ActivityQuery {
+	const client = query("client") ?? "";
+	const account = query("account") ?? "";
+	return {
+		account:
+			ALIAS_PATTERN.test(account) && accounts.some((linked) => linked.alias === account) ? account : undefined,
+		group: GROUP_KEY_PATTERN.test(client) ? groups?.find((group) => group.key === client) : undefined,
+		owner: client === "owner",
+		reads: query("reads") === "show",
+	};
+}
+
+const activityParams = (query: ActivityQuery) => ({
+	account: query.account,
+	client: query.group ? query.group.key : query.owner ? "owner" : undefined,
+	reads: query.reads ? "show" : undefined,
+});
+
+/** The rows the filters select: used by the page, its row count and its CSV alike. */
+async function activityOptions(env: Env, query: ActivityQuery): Promise<ActivityOptions> {
+	const options: ActivityOptions = { reads: query.reads };
+	if (query.group) options.clientIds = query.group.clients.map((client) => client.clientId);
+	else if (query.owner) options.clientIds = [OWNER_CLIENT_ID];
+	if (query.account) options.spans = await aliasSpans(env, query.account);
+	return options;
+}
+
+/** Who a row is shown as: the app's card label, "Owner", or the name recorded with a removed app. */
+function clientLabeller(groups: readonly ClientGroup[] | null): (entry: AuditEntry) => { label: string; group?: ClientGroup } {
+	const groupOf = new Map<string, ClientGroup>();
+	for (const group of groups ?? []) {
+		for (const client of group.clients) groupOf.set(client.clientId, group);
+	}
+	return (entry) => {
+		if (entry.clientId === OWNER_CLIENT_ID) return { label: "Owner" };
+		const group = groupOf.get(entry.clientId);
+		return group ? { group, label: group.label } : { label: entry.clientName || "(no name)" };
+	};
 }
 
 /**
  * All activity: every write across all clients and accounts, newest first,
- * filterable by client and by account, 50 to a page. Rows show time, client,
- * account and action; recipients, subjects and ids sit behind a per-row
- * expand. Bodies and file content are never stored, so they cannot appear.
+ * filterable by client and by account. The page shows the newest ROW_LIMIT
+ * rows; Download CSV has every row the filters match. Recipients, subjects
+ * and ids sit behind a per-row expand. Bodies and file content are never
+ * stored, so they cannot appear.
  */
 async function activitySectionHtml(
 	env: Env,
@@ -494,25 +550,13 @@ async function activitySectionHtml(
 	groups: readonly ClientGroup[] | null,
 	accounts: readonly AccountInfo[],
 ): Promise<string> {
-	const filter: ActivityFilter = {};
-	if (query.group) filter.clientIds = query.group.clients.map((client) => client.clientId);
-	else if (query.owner) filter.clientIds = [OWNER_CLIENT_ID];
-	let former: string[] = [];
-	let result: Awaited<ReturnType<typeof activityPage>> | null = null;
-	try {
-		if (query.account) {
-			filter.spans = await aliasSpans(env, query.account);
-			former = filter.spans.slice(1).map((span) => span.alias);
-		}
-		result = await activityPage(env, { ...filter, page: query.page, reads: query.reads });
-	} catch (_e) {
-		result = null;
-	}
-
-	const groupOf = new Map<string, ClientGroup>();
-	for (const group of groups ?? []) {
-		for (const client of group.clients) groupOf.set(client.clientId, group);
-	}
+	const result = await loadOrNull(
+		activityOptions(env, query).then((options) =>
+			Promise.all([listActivity(env, { ...options, limit: ROW_LIMIT }), countActivity(env, options)]),
+		),
+	);
+	const params = activityParams(query);
+	const search = new URLSearchParams(Object.entries(params).filter((pair): pair is [string, string] => !!pair[1]));
 	const optionLabel = (group: ClientGroup) =>
 		group.brand ? group.label : `${group.label} (${group.hosts.join(", ") || "no redirect URL"})`;
 	const form = `<form class="filters" method="get" action="/settings#activity">
@@ -529,52 +573,44 @@ ${accounts.map((account) => `<option value="${escapeHtml(account.alias)}"${query
 </select></label>
 <label class="check"><input type="checkbox" name="reads" value="show"${query.reads ? " checked" : ""}> Show reads too</label>
 <button type="submit">Apply</button>
-${query.group || query.owner || query.account || query.reads || query.page > 1 ? '<a href="/settings#activity">Clear</a>' : ""}
+${search.size ? '<a href="/settings#activity">Clear</a>' : ""}
 </form>`;
 
 	if (!result) {
 		return `${form}
-${errorCardHtml("the activity log", activityHref(query, query.page))}`;
+${errorCardHtml("the activity log", `/settings${search.size ? `?${search}` : ""}#activity`)}`;
 	}
-	const clientCell = (entry: AuditEntry) => {
-		if (entry.clientId === OWNER_CLIENT_ID) return "Owner";
-		const group = groupOf.get(entry.clientId);
-		if (group) {
-			return `${escapeHtml(group.label)}${group.unverified ? ' <span class="badge badge-alert">Unverified</span>' : ""}`;
-		}
-		return `${escapeHtml(entry.clientName || "(no name)")}${groups ? '<br><span class="muted small">No longer registered</span>' : ""}`;
-	};
-	const rows = result.entries
+	const [entries, total] = result;
+	const labelOf = clientLabeller(groups);
+	const rows = entries
 		.map((entry) => {
+			const who = labelOf(entry);
 			const details = auditDetails(entry);
+			const client =
+				entry.clientId === OWNER_CLIENT_ID
+					? "Owner"
+					: who.group
+						? `${escapeHtml(who.label)}${who.group.unverified ? ' <span class="badge badge-alert">Unverified</span>' : ""}`
+						: `${escapeHtml(who.label)}${groups ? '<br><span class="muted small">No longer registered</span>' : ""}`;
 			return `<tr>
 <td class="muted nowrap">${timeHtml(entry.ts)}</td>
-<td>${clientCell(entry)}</td>
+<td>${client}</td>
 <td>${escapeHtml(entry.alias || "(all)")}</td>
 <td><strong>${escapeHtml(entry.tool)}</strong> <span class="badge">${entry.kind === "read" ? "read" : "write"}</span>${entry.outcome === "ok" ? "" : `<br><span class="muted">${escapeHtml(`failed: ${entry.outcome}`)}</span>`}</td>
 <td>${details ? `<details class="row-details"><summary>Details</summary><div class="small">${details}</div></details>` : ""}</td>
 </tr>`;
 		})
 		.join("\n");
-	const pager =
-		query.page > 1 || result.hasNext
-			? `<nav class="pager" aria-label="Activity pages">
-${query.page > 1 ? `<a class="btn" href="${escapeHtml(activityHref(query, query.page - 1))}">Newer</a>` : "<span></span>"}
-<span class="muted small">Page ${query.page}</span>
-${result.hasNext ? `<a class="btn" href="${escapeHtml(activityHref(query, query.page + 1))}">Older</a>` : "<span></span>"}
-</nav>`
-			: "";
 	return `${form}
-${former.length ? `<p class="muted small">Includes activity from when this account was called ${former.map((name) => `<strong>${escapeHtml(name)}</strong>`).join(", ")}.</p>` : ""}
 ${
-	result.entries.length
+	entries.length
 		? `<div class="table-wrap"><table>
 <tr><th>Time</th><th>AI client</th><th>Account</th><th>Action</th><th></th></tr>
 ${rows}
 </table></div>`
 		: '<p class="muted">Nothing recorded for this view.</p>'
 }
-${pager}`;
+${listFootHtml(exportHref("activity", params), total)}`;
 }
 
 // Status is read-only; the allowed redirect URLs are the one editable setting.
@@ -591,33 +627,15 @@ app.get("/settings", async (c) => {
 	const accounts = status?.accounts ?? [];
 	const attention = status?.attention ?? fallbackAttention(c.env);
 	const groups = directory?.groups ?? null;
-	const [usage, activity] = await Promise.all([
-		Promise.all(accounts.map((account) => writeUsage(c.env, account.alias))),
-		groups ? loadOrNull(loadGroupActivity(c.env, groups)) : null,
-	]);
+	const shown = accounts.slice(0, ROW_LIMIT);
+	const usage = await Promise.all(shown.map((account) => writeUsage(c.env, account.alias)));
 	const cap = dailySendCap(c.env);
 	const enabled = writesEnabled(c.env);
 	const csrf = escapeHtml(session.csrf);
 	const notice = SETTINGS_NOTICES[c.req.query("msg") ?? ""];
+	const query = activityQuery((name) => c.req.query(name), groups, accounts);
 
-	// Filters: each value must be one GoBridge already knows. Anything else is ignored.
-	const clientParam = c.req.query("client") ?? "";
-	const accountParam = c.req.query("account") ?? "";
-	const pageParam = c.req.query("page") ?? "";
-	const query: ActivityQuery = {
-		account:
-			ALIAS_PATTERN.test(accountParam) && accounts.some((account) => account.alias === accountParam)
-				? accountParam
-				: undefined,
-		group: GROUP_KEY_PATTERN.test(clientParam)
-			? groups?.find((group) => group.key === clientParam)
-			: undefined,
-		owner: clientParam === "owner",
-		page: /^[1-9][0-9]{0,2}$/.test(pageParam) ? Math.min(Number(pageParam), ACTIVITY_MAX_PAGE) : 1,
-		reads: c.req.query("reads") === "show",
-	};
-
-	const usageCards = accounts
+	const usageCards = shown
 		.map((account, i) => {
 			const relink = attention.relink.includes(account.alias);
 			return `<div class="card${relink ? " card-alert" : ""}">
@@ -637,11 +655,14 @@ ${usageMetersHtml(c.env, usage[i])}
 		? `<div class="cards">
 ${errorCardHtml("your linked accounts", "/settings")}
 </div>`
-		: accounts.length
-			? `<div class="cards">
+		: `${
+				accounts.length
+					? `<div class="cards">
 ${usageCards}
 </div>`
-			: '<p class="muted">No accounts linked yet. Link one on the <a href="/link">Linked accounts</a> page.</p>';
+					: '<p class="muted">No accounts linked yet. Link one on the <a href="/link">Linked accounts</a> page.</p>'
+			}
+${listFootHtml(exportHref("usage"), accounts.length)}`;
 
 	const switchRows = KILL_SWITCHES.map((name) => {
 		const on = switchEnabled(c.env, name);
@@ -672,16 +693,11 @@ ${usageCards}
 		bodyHtml: `${notice ? `<p class="notice">${escapeHtml(notice)}</p>` : ""}${warnings}
 <section class="panel">
 <h2>Allowed AI clients</h2>
-<p class="muted">An AI app can sign in and use GoBridge only when every redirect URL it registered is on this list. Removing a URL cuts off the apps that use it at once. When an app that is not allowed tries to connect, GoBridge shows you the exact URL to add.</p>
 ${allowedUrlsHtml(allowed, csrf)}
-<h3>Apps that have registered</h3>
-${
-	groups
-		? clientCardsHtml(groups, { activity, allowed, csrf: session.csrf })
-		: `<div class="cards">
-${errorCardHtml("your AI clients", "/settings")}
-</div>`
-}
+</section>
+<section class="panel">
+<h2>Usage by account</h2>
+${usageSection}
 </section>
 <section class="panel">
 <h2>Status</h2>
@@ -699,18 +715,140 @@ ${switchRows}
 <dt>Linked accounts</dt><dd>${status ? `${accounts.length}${attention.relink.length ? `, ${attention.relink.length} needing re-login` : ""}` : "unavailable"}</dd>
 </dl>
 </section>
-<section class="panel">
-<h2>Usage by account</h2>
-${usageSection}
-</section>
 <section class="panel" id="activity">
 <h2>All activity</h2>
-<p class="muted">Every write by every AI client on every account, newest first, kept for 90 days. Writes record recipients and subject or event name, never bodies. Reads record only the tool and how many items came back.</p>
 ${await activitySectionHtml(c.env, query, groups, accounts)}
 </section>`,
 		session,
 		title: "Settings",
 	});
+});
+
+const EXPORT_TABLES: readonly ExportTable[] = ["activity", "usage", "client-writes", "client-connections", "account-clients"];
+
+// Download CSV: every row of one data list, with the same filters as its page.
+// Read-only and owner-only, like the pages: without a session it returns no
+// data and starts owner sign-in. Each parameter must be a value GoBridge
+// already knows (a table name, a group key, a linked alias).
+app.get("/export.csv", async (c) => {
+	const route = "GET /export.csv";
+	const session = await readOwnerSession(c.req.raw, c.env);
+	if (!session) return startOwnerLogin(c.req.raw, c.env, "/settings");
+	const refuse = (category: string) => {
+		console.warn(`${route} denied: ${category}`);
+		return renderMessagePage("Could not continue", "There is nothing to download for that request.", 404, undefined, "/settings");
+	};
+	const table = EXPORT_TABLES.find((name) => name === c.req.query("table"));
+	if (!table) return refuse("unknown_table");
+	const iso = (ts?: string) => (ts && Number.isFinite(Date.parse(ts)) ? new Date(Date.parse(ts)).toISOString() : "");
+
+	const [status, directory] = await Promise.all([
+		ownerStatus(c.env),
+		table === "usage" ? null : loadClientDirectory(c.env.OAUTH_PROVIDER, session.sub),
+	]);
+	const groups = directory?.groups ?? [];
+
+	if (table === "activity") {
+		const query = activityQuery((name) => c.req.query(name), groups, status.accounts);
+		const entries = await allActivity(c.env, await activityOptions(c.env, query));
+		const labelOf = clientLabeller(groups);
+		return csvResponse(
+			"activity",
+			csvDocument(
+				["time", "ai_client", "account", "action", "kind", "outcome", "details"],
+				entries.map((entry) => [
+					iso(entry.ts),
+					labelOf(entry).label,
+					entry.alias || "(all)",
+					entry.tool,
+					entry.kind,
+					entry.outcome,
+					auditDetailParts(entry).join("; "),
+				]),
+			),
+		);
+	}
+
+	if (table === "usage") {
+		const usage = await Promise.all(status.accounts.map((account) => writeUsage(c.env, account.alias)));
+		const shown = (count?: number) => count ?? "unavailable";
+		return csvResponse(
+			"usage",
+			csvDocument(
+				["account", "email", "status", "emails_sent_today", "daily_send_cap", "writes_this_hour", "write_limit", "reads_this_hour", "read_limit", "files_shared_today", "daily_share_cap"],
+				status.accounts.map((account, i) => [
+					account.alias,
+					account.email,
+					status.attention.relink.includes(account.alias) ? "needs re-login" : "connected",
+					shown(usage[i]?.sendsToday),
+					dailySendCap(c.env),
+					shown(usage[i]?.writesThisHour),
+					WRITE_RATE_LIMIT_PER_HOUR,
+					shown(usage[i]?.readsThisHour),
+					readRateLimit(c.env),
+					shown(usage[i]?.sharesToday),
+					DAILY_SHARE_CAP,
+				]),
+			),
+		);
+	}
+
+	if (table === "account-clients") {
+		const wanted = c.req.query("account") ?? "";
+		const account = ALIAS_PATTERN.test(wanted) ? status.accounts.find((linked) => linked.alias === wanted) : undefined;
+		if (!account) return refuse("unknown_alias");
+		const rows = await loadAccountClientRows(c.env, c.env.OAUTH_PROVIDER, session.sub, account.alias);
+		return csvResponse(
+			"account-clients",
+			csvDocument(
+				["account", "ai_client", "status", "last_active", "writes"],
+				rows.map((row) => [
+					account.alias,
+					row.label,
+					row.group ? (row.group.unverified ? "unverified" : row.group.brand ? "verified" : "registered") : "no longer registered",
+					iso(row.lastActive),
+					row.writes,
+				]),
+			),
+		);
+	}
+
+	const wanted = c.req.query("client") ?? "";
+	const group = GROUP_KEY_PATTERN.test(wanted) ? groups.find((candidate) => candidate.key === wanted) : undefined;
+	if (!group) return refuse("unknown_client");
+
+	if (table === "client-writes") {
+		const entries = await allActivity(c.env, clientWrites(group));
+		return csvResponse(
+			"client-writes",
+			csvDocument(
+				["time", "ai_client", "account", "action", "outcome"],
+				entries.map((entry) => [iso(entry.ts), group.label, entry.alias || "(all)", entry.tool, entry.outcome]),
+			),
+		);
+	}
+
+	const allowed = await loadOrNull(listAllowedRedirects(c.env));
+	return csvResponse(
+		"client-connections",
+		csvDocument(
+			["ai_client", "registered_as", "client_id", "registered", "grants", "connected_since", "redirect_urls", "allowed"],
+			group.clients.map((client) => {
+				const grants = group.grants.filter((grant) => grant.clientId === client.clientId);
+				const ok = groupAllowed({ ...group, clients: [client] }, allowed);
+				return [
+					group.label,
+					client.clientName || "(no name)",
+					client.clientId,
+					client.registrationDate ? new Date(client.registrationDate * 1000).toISOString() : "",
+					grants.length,
+					grants.length ? new Date(Math.min(...grants.map((grant) => grant.createdAt)) * 1000).toISOString() : "",
+					(client.redirectUris ?? []).join(" "),
+					ok === null ? "unknown" : ok ? "yes" : "no",
+				];
+			}),
+		),
+	);
 });
 
 /** Shared by add and remove: session + CSRF, then a normalized redirect URL. */

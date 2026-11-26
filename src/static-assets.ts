@@ -5,7 +5,7 @@
  *
  *   GET /static/app.css        layout and components for every page
  *   GET /static/menu.js        keyboard + click behaviour for the account menu,
- *                              the detail drawer and inline rename, and the
+ *                              the detail modal and inline rename, and the
  *                              profile-picture fallback
  *   GET /static/logo.svg       the GoBridge logo (MCP connector icon, page brand)
  *   GET /static/logo-256.png   the logo at 256x256 (MCP connector icon)
@@ -190,17 +190,19 @@ label{font-size:13px;color:#52525b}
 .filters label{display:grid;gap:2px}
 .filters .check{display:flex;align-items:center;height:32px}
 .filters .check input{margin:0}
-.pager{display:flex;align-items:center;justify-content:space-between;gap:8px;margin-top:12px}
-/* Detail view: a full-screen sheet on phones, a side drawer from 768px */
-.drawer-backdrop{position:fixed;inset:0;z-index:50;background:rgba(24,24,27,.35)}
-.drawer{position:fixed;inset:0;z-index:60;overflow-y:auto;overscroll-behavior:contain;padding:16px 16px max(24px,env(safe-area-inset-bottom));background:#fff}
-.drawer:focus{outline:none}
-.drawer-head{display:flex;align-items:flex-start;gap:12px;padding-bottom:16px}
-.drawer-head h2{margin:0;font-size:17px;overflow-wrap:anywhere}
-.drawer-head .icon-btn{width:36px;height:36px}
-.drawer-section{padding:16px 0;border-top:1px solid #f4f4f5}
-.drawer-section h3{margin:0 0 10px}
-.drawer-section form{margin:0}
+/* Detail view: a centered modal card over a dimmed backdrop; near full screen on phones */
+.modal-backdrop{position:fixed;inset:0;z-index:50;background:rgba(24,24,27,.45);cursor:default}
+.modal{position:fixed;z-index:60;top:8px;right:8px;bottom:8px;left:8px;overflow-y:auto;overscroll-behavior:contain;padding:16px 16px max(20px,env(safe-area-inset-bottom));border-radius:12px;background:#fff;box-shadow:0 20px 40px rgba(0,0,0,.2)}
+.modal:focus{outline:none}
+.modal-head{display:flex;align-items:flex-start;gap:12px;padding-bottom:16px}
+.modal-head h2{margin:0;font-size:17px;overflow-wrap:anywhere}
+.modal-head .icon-btn{width:36px;height:36px}
+.modal-section{padding:16px 0;border-top:1px solid #f4f4f5}
+.modal-section:last-child{padding-bottom:0}
+.modal-section h3{margin:0 0 10px}
+.modal-section form{margin:0}
+.modal-section .confirm[open]{flex-basis:100%}
+.list-foot{display:flex;flex-wrap:wrap;align-items:center;gap:8px 12px;margin-top:12px}
 .rows{display:grid;gap:12px;margin:0;padding:0;list-style:none}
 .row{display:flex;align-items:center;gap:10px;min-width:0}
 .row-main{flex:1;min-width:0;overflow-wrap:anywhere}
@@ -236,7 +238,7 @@ label{font-size:13px;color:#52525b}
 .side-account{margin-top:auto;padding:8px 8px 12px}
 .topbar,.tabbar,.menu-backdrop{display:none}
 .content{padding:32px 40px 48px}
-.drawer{left:auto;width:440px;max-width:100%;padding:24px;border-left:1px solid #e4e4e7;box-shadow:-12px 0 32px rgba(0,0,0,.08)}
+.modal{top:50%;right:auto;bottom:auto;left:50%;width:560px;max-width:calc(100vw - 48px);max-height:calc(100vh - 64px);padding:24px;transform:translate(-50%,-50%)}
 .menu{position:absolute;left:0;right:auto;bottom:100%;width:256px;margin-bottom:4px;padding:4px 0;border:1px solid #e4e4e7;border-radius:8px;box-shadow:0 10px 15px -3px rgba(0,0,0,.1),0 4px 6px -4px rgba(0,0,0,.1)}
 .menu-header{padding:8px 12px}
 .menu-item{height:36px;padding:0 12px;font-size:14px}
@@ -263,20 +265,20 @@ export const MENU_JS = `(function () {
 		if (img.complete && img.naturalWidth === 0) failed();
 	});
 
-	// Detail view (drawer / sheet): the server renders it and makes the page
-	// behind it inert. Here: move focus in, and close on Escape by following
-	// the Close link (a fixed same-page address).
-	var drawer = document.querySelector("[data-drawer]");
-	if (drawer) {
-		var closeLink = drawer.querySelector("a[data-drawer-close]");
-		var target = window.location.hash ? document.getElementById(window.location.hash.slice(1)) : null;
-		var field = target && drawer.contains(target) ? target.querySelector("input[type=text]") : null;
-		(field || drawer).focus();
+	// Detail view (modal): the server renders it and makes the page behind it
+	// inert, which keeps focus inside. Here: move focus in, and close on
+	// Escape by following the Close link (a fixed same-page address).
+	var modal = document.querySelector("[data-modal]");
+	var target = window.location.hash ? document.getElementById(window.location.hash.slice(1)) : null;
+	if (modal) {
+		var closeLink = modal.querySelector("a[data-modal-close]");
+		var field = target && modal.contains(target) ? target.querySelector("input[type=text]") : null;
+		(field || modal).focus();
 		document.addEventListener("keydown", function (event) {
 			if (event.key !== "Escape" || event.defaultPrevented || !closeLink) return;
-			// An open confirm inside the drawer closes first.
+			// An open confirm inside the modal closes first.
 			var open = event.target && event.target.closest ? event.target.closest("details[open]") : null;
-			if (open && drawer.contains(open)) {
+			if (open && modal.contains(open)) {
 				event.preventDefault();
 				open.open = false;
 				var summary = open.querySelector("summary");
@@ -286,6 +288,10 @@ export const MENU_JS = `(function () {
 			event.preventDefault();
 			window.location.assign(closeLink.getAttribute("href"));
 		});
+	} else if (target && target.className === "card-link") {
+		// After a modal closes, the address names the card that opened it:
+		// put focus back there.
+		target.focus();
 	}
 
 	// Inline rename on an account card: the pencil turns the alias into a text
