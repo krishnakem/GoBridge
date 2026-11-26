@@ -17,7 +17,9 @@ import {
 	RESERVED_ALIASES,
 	saveAccount,
 } from "../src/accounts";
-import { activityPage, ACTIVITY_PAGE_SIZE, aliasSpans, clientStats } from "../src/activity";
+import { aliasSpans, allActivity, clientStats, countActivity, listActivity } from "../src/activity";
+import { ROW_LIMIT } from "../src/components";
+import { csvCell, csvDocument } from "../src/csv";
 import { addAllowedRedirect, normalizeRedirectUri } from "../src/allowed-clients";
 import { clientIdentity, GROUP_KEY_PATTERN, groupClients, revokeGroup } from "../src/client-groups";
 import { claimsKnownBrand } from "../src/client-logos";
@@ -596,8 +598,9 @@ describe("activity", () => {
 		expect(await aliasSpans(env, "span-old")).toEqual([{ alias: "span-old", from: "2026-11-06T10:00:00.000Z", to: undefined }]);
 	});
 
-	it("pages newest first, filters by client and account, and adds reads only when asked", async () => {
-		for (let i = 0; i < ACTIVITY_PAGE_SIZE + 5; i++) {
+	it("lists newest first, counts and exports the same rows, and adds reads only when asked", async () => {
+		const total = 23;
+		for (let i = 0; i < total; i++) {
 			await row("audit_writes", {
 				alias: i % 2 ? "page-a" : "page-b",
 				clientId: i % 5 ? "page-c1" : "page-c2",
@@ -607,27 +610,33 @@ describe("activity", () => {
 		}
 		await row("audit_reads", { alias: "page-a", clientId: "page-c1", tool: "get_thread", ts: "2026-10-01T12:00:00.000Z" });
 		const ids = ["page-c1", "page-c2"];
+		const writes = { clientIds: ids, reads: false };
 
-		const first = await activityPage(env, { clientIds: ids, page: 1, reads: false });
-		expect(first.entries).toHaveLength(ACTIVITY_PAGE_SIZE);
-		expect(first.hasNext).toBe(true);
-		expect(first.entries[0].ts > first.entries[1].ts).toBe(true);
-		expect(first.entries.every((entry) => entry.kind === "write")).toBe(true);
-		const second = await activityPage(env, { clientIds: ids, page: 2, reads: false });
-		expect(second.entries).toHaveLength(5);
-		expect(second.hasNext).toBe(false);
+		const first = await listActivity(env, { ...writes, limit: ROW_LIMIT });
+		expect(first).toHaveLength(ROW_LIMIT);
+		expect(first[0].ts).toBe("2026-10-01T10:22:00.000Z");
+		expect(first[0].ts > first[1].ts).toBe(true);
+		expect(await countActivity(env, writes)).toBe(total);
+		// The export pages through everything, whatever the batch size, in the same order.
+		const everything = await allActivity(env, writes, 7);
+		expect(everything).toHaveLength(total);
+		expect(everything.slice(0, ROW_LIMIT)).toEqual(first);
+		expect(new Set(everything.map((entry) => entry.ts)).size).toBe(total);
 
-		const withReads = await activityPage(env, { clientIds: ids, page: 1, reads: true });
-		expect(withReads.entries[0]).toMatchObject({ kind: "read", meta: { resultCount: 1 }, tool: "get_thread" });
+		const withReads = { clientIds: ids, reads: true };
+		expect((await listActivity(env, { ...withReads, limit: 1 }))[0]).toMatchObject({ kind: "read", meta: { resultCount: 1 }, tool: "get_thread" });
+		expect(await countActivity(env, withReads)).toBe(total + 1);
+		expect(await allActivity(env, withReads, 10)).toHaveLength(total + 1);
 
-		const oneClient = await activityPage(env, { clientIds: ["page-c2"], page: 1, reads: false });
-		expect(oneClient.entries).toHaveLength(11);
-		const oneAccount = await activityPage(env, { clientIds: ids, page: 1, reads: false, spans: [{ alias: "page-a" }] });
-		expect(oneAccount.entries.every((entry) => entry.alias === "page-a")).toBe(true);
-		expect(oneAccount.entries).toHaveLength(27);
-		expect((await activityPage(env, { clientIds: [], page: 1, reads: true })).entries).toEqual([]);
-		// A nonsense page number falls back to the first page.
-		expect((await activityPage(env, { clientIds: ids, page: Number.NaN, reads: false })).entries).toHaveLength(ACTIVITY_PAGE_SIZE);
+		expect(await countActivity(env, { clientIds: ["page-c2"], reads: false })).toBe(5);
+		const oneAccount = await allActivity(env, { ...writes, spans: [{ alias: "page-a" }] });
+		expect(oneAccount.every((entry) => entry.alias === "page-a")).toBe(true);
+		expect(oneAccount).toHaveLength(11);
+		expect(await allActivity(env, { clientIds: [], reads: true })).toEqual([]);
+		// clientsOnly leaves out the owner's own actions.
+		await row("audit_writes", { alias: "page-a", clientId: "owner", tool: "rename_account", ts: "2026-10-01T13:00:00.000Z" });
+		expect(await countActivity(env, { reads: false, spans: [{ alias: "page-a" }] })).toBe(12);
+		expect(await countActivity(env, { clientsOnly: true, reads: false, spans: [{ alias: "page-a" }] })).toBe(11);
 	});
 
 	it("formats relative times", () => {
@@ -649,7 +658,7 @@ describe("linked accounts page", () => {
 		const owner = await signIn();
 		const html = await (await get("/link", owner.cookie)).text();
 		expect(html).not.toContain("<table");
-		expect(html).toContain('<a class="card-link" href="/link?open=grid-one"><strong>grid-one</strong></a>');
+		expect(html).toContain('<a class="card-link" id="acct-grid-one" href="/link?open=grid-one"><strong>grid-one</strong></a>');
 		expect(html).toContain('<span class="status"><span class="status-dot"></span>Connected</span>');
 		// The pencil is a real link (works without the script) that the script upgrades.
 		expect(html).toContain('<a class="icon-btn reveal" href="/link?open=grid-one#rename" data-rename-open aria-label="Rename grid-one" title="Rename">');
@@ -661,7 +670,7 @@ describe("linked accounts page", () => {
 		expect(cards.lastIndexOf('<details class="card card-add disclose">')).toBeGreaterThan(cards.lastIndexOf('class="card card-click'));
 		expect(html).toMatch(/<summary aria-label="Link a Google account">[\s\S]*?<form class="field" method="post" action="\/link">/);
 		// No detail view, so the page is not inert.
-		expect(html).not.toContain("data-drawer");
+		expect(html).not.toContain("data-modal");
 		expect(html).not.toContain(" inert");
 		await deleteAccount(env, "grid-one");
 	});
@@ -682,10 +691,11 @@ describe("linked accounts page", () => {
 
 		const owner = await signIn();
 		const html = await (await get("/link?open=detail-acct", owner.cookie)).text();
-		const drawer = html.slice(html.indexOf('<aside class="drawer"'));
-		expect(drawer).toContain('<aside class="drawer" role="dialog" aria-modal="true" aria-labelledby="drawer-title" tabindex="-1" data-drawer>');
-		expect(drawer).toContain('<h2 id="drawer-title">detail-acct</h2>');
-		expect(drawer).toContain('<a class="icon-btn" href="/link" aria-label="Close" title="Close" data-drawer-close>');
+		const drawer = html.slice(html.indexOf('<div class="modal"'));
+		expect(drawer).toContain('<div class="modal" role="dialog" aria-modal="true" aria-labelledby="modal-title" tabindex="-1" data-modal>');
+		expect(html).toContain('<a class="modal-backdrop" href="/link#acct-detail-acct" tabindex="-1" aria-hidden="true"></a>');
+		expect(drawer).toContain('<h2 id="modal-title">detail-acct</h2>');
+		expect(drawer).toContain('<a class="icon-btn" href="/link#acct-detail-acct" aria-label="Close" title="Close" data-modal-close>');
 		// The page behind the drawer cannot be focused or clicked.
 		expect(html).toContain('<div class="shell" inert>');
 		expect(html).toContain('<nav class="tabbar" aria-label="Main" inert>');
@@ -716,7 +726,7 @@ describe("linked accounts page", () => {
 			const res = await get(`/link?open=${encodeURIComponent(value)}`, owner.cookie);
 			expect(res.status, value).toBe(200);
 			const html = await res.text();
-			expect(html, value).not.toContain("data-drawer");
+			expect(html, value).not.toContain("data-modal");
 			expect(html).not.toContain(" inert");
 			if (value.length > 3 && value !== "OPEN-REAL") expect(html).not.toContain(value);
 			expect(html).not.toContain("alert(1)");
@@ -804,8 +814,8 @@ describe("AI clients page", () => {
 		expect(html).not.toContain("Recent writes");
 
 		// Detail view: recent writes (account, action, time), both connections, Revoke.
-		const drawer = (await (await get(`/clients?open=${key}`, owner.cookie)).text()).split('<aside class="drawer"')[1];
-		expect(drawer).toContain('<h2 id="drawer-title">Card App</h2>');
+		const drawer = (await (await get(`/clients?open=${key}`, owner.cookie)).text()).split('<div class="modal"')[1];
+		expect(drawer).toContain('<h2 id="modal-title">Card App</h2>');
 		expect(drawer).toContain("<h3>Recent writes</h3>");
 		expect(drawer.match(/<li class="row"><div class="row-main"><span class="mono">/g)).toHaveLength(3);
 		expect(drawer).toContain('<span class="muted">(failed)</span>');
@@ -843,7 +853,7 @@ describe("AI clients page", () => {
 			const res = await get(`/clients?open=${encodeURIComponent(value)}`, owner.cookie);
 			expect(res.status, value).toBe(200);
 			const html = await res.text();
-			expect(html, value).not.toContain("data-drawer");
+			expect(html, value).not.toContain("data-modal");
 			expect(html).not.toContain("alert(1)");
 			expect(html).not.toContain("AAAAAAAAAAAAAAAA");
 		}
@@ -866,32 +876,94 @@ describe("AI clients page", () => {
 			} as any);
 			expect(res.status, page).toBe(200);
 			const html = await res.text();
-			expect(html).toContain("Could not load your AI clients");
-			expect(html).toContain(`<a class="btn" href="${page}">Retry</a>`);
+			// Settings no longer lists apps: it still renders, with its filter and no error.
+			if (page === "/clients") {
+				expect(html).toContain("Could not load your AI clients");
+				expect(html).toContain('<a class="btn" href="/clients">Retry</a>');
+			} else {
+				expect(html).toContain('<option value="">All clients</option>');
+			}
 			expect(html).not.toContain("kv exploded");
 		}
 	});
 });
 
 describe("settings: shared components and All activity", () => {
-	it("uses the same client list, with the same Revoke, as the AI clients page", async () => {
+	it("orders the sections, drops the duplicate app list, and shows no removed copy anywhere", async () => {
 		mockGoogle();
-		await register("Shared List App", ["https://shared.example/cb"]);
+		await account("copy-acct");
+		await allow("https://copy.example/cb");
+		const clientId = await register("Copy App", ["https://copy.example/cb"]);
+		await row("audit_writes", { alias: "copy-old", clientId, clientName: "Copy App", tool: "create_draft", ts: "2026-11-01T10:00:00.000Z" });
+		await row("audit_writes", { alias: "copy-old", clientId: "owner", tool: "rename_account", ts: "2026-11-02T10:00:00.000Z", meta: { newAlias: "copy-acct" } });
+		const key = await groupKey({ clientName: "Copy App", redirectUris: ["https://copy.example/cb"] });
 		const owner = await signIn("/settings");
-		const cardsOf = (html: string) =>
-			html
-				.split('<div class="card card-click')
-				.slice(1)
-				.map((card) => card.split("</details>")[0].replace(/<time [^>]+>[^<]*<\/time>/g, "<time>"))
-				.filter((card) => card.includes("/clients?open="));
-		const onClients = cardsOf(await (await get("/clients", owner.cookie)).text());
-		const onSettings = cardsOf(await (await get("/settings", owner.cookie)).text());
-		expect(onClients.length).toBeGreaterThan(0);
-		expect(onSettings).toEqual(onClients);
-		expect(onSettings.join("")).toContain('action="/clients/revoke"');
+		const settings = await (await get("/settings?account=copy-acct", owner.cookie)).text();
+		expect(settings.match(/<h2>[^<]+<\/h2>/g)).toEqual([
+			"<h2>Allowed AI clients</h2>",
+			"<h2>Usage by account</h2>",
+			"<h2>Status</h2>",
+			"<h2>All activity</h2>",
+		]);
+		expect(settings).not.toContain("/clients?open=");
+		expect(settings).not.toContain('action="/clients/revoke"');
+
+		const pages = [
+			settings,
+			await (await get("/clients", owner.cookie)).text(),
+			await (await get(`/clients?open=${key}`, owner.cookie)).text(),
+			await (await get("/link", owner.cookie)).text(),
+			await (await get("/link?open=copy-acct", owner.cookie)).text(),
+		];
+		for (const html of pages) {
+			for (const gone of [
+				"An AI app can sign in and use GoBridge only when",
+				"Exact URLs only, no wildcards",
+				"At most 20 URLs",
+				"Every write by every AI client",
+				"Reads record only the tool",
+				"One card per app",
+				"Includes activity from when this account was called",
+				"Renaming keeps the account",
+				"At most 20 renames an hour",
+				"Apps that have registered",
+				"Re-connect",
+				"<h3>Unlink</h3>",
+				"<h3>Revoke</h3>",
+				"drawer",
+				"<aside class=\"drawer",
+			]) {
+				expect(html, gone).not.toContain(gone);
+			}
+		}
+		// The buttons the removed headings sat over are still there.
+		expect(pages[2]).toContain('<summary class="btn btn-danger" aria-label="Revoke Copy App">Revoke…</summary>');
+		expect(pages[4]).toContain('<summary class="btn btn-danger" aria-label="Unlink copy-acct">Unlink…</summary>');
+		// History across the rename is still followed, just not announced.
+		expect(pages[4]).toContain("<strong>Copy App</strong>");
+		expect(settings.split('id="activity"')[1]).toContain("<strong>create_draft</strong>");
+		await deleteAccount(env, "copy-acct");
 	});
 
-	it("filters by client and account, pages, and keeps recipients behind a per-row expand", async () => {
+	it("puts Re-link beside Unlink in the account modal, as a neutral button that keeps the alias", async () => {
+		mockGoogle();
+		await account("relink-me");
+		const owner = await signIn();
+		const html = await (await get("/link?open=relink-me", owner.cookie)).text();
+		expect(html).toMatch(
+			/<div class="actions">\n<form method="post" action="\/link">\n<input type="hidden" name="csrf_token" value="[^"]+">\n<input type="hidden" name="alias" value="relink-me">\n<button type="submit" title="[^"]+">Re-link<\/button>\n<\/form>\n<details class="disclose confirm">\n<summary class="btn btn-danger" aria-label="Unlink relink-me">Unlink…<\/summary>/,
+		);
+		// It starts Google sign-in for the same alias.
+		const res = await post("/link", owner.cookie, { alias: "relink-me", csrf_token: owner.csrf });
+		expect(res.status).toBe(303);
+		const google = new URL(res.headers.get("Location")!);
+		expect(google.hostname).toBe("accounts.google.com");
+		const state = JSON.parse((await env.OAUTH_KV.get(`link:state:${google.searchParams.get("state")}`))!);
+		expect(state.alias).toBe("relink-me");
+		await deleteAccount(env, "relink-me");
+	});
+
+	it("filters by client and account, shows 5 rows with a CSV of the rest, and keeps recipients behind a per-row expand", async () => {
 		mockGoogle();
 		await account("act-one");
 		await account("act-two");
@@ -934,15 +1006,18 @@ describe("settings: shared components and All activity", () => {
 		expect(hostile).not.toContain("zz-not-linked");
 		expect(hostile.split('id="activity"')[1]).toContain("<strong>send_message</strong>");
 
-		// Paging keeps the filters and stays on the same section.
-		for (let i = 0; i < ACTIVITY_PAGE_SIZE; i++) {
+		// Only the newest 5 rows are shown; the CSV link carries the same filters.
+		const few = await activity(`?client=${key}`);
+		expect(few.match(/<tr>\n<td class="muted nowrap">/g)).toHaveLength(2);
+		expect(few).toContain(`<div class="list-foot"><a class="btn" href="/export.csv?table=activity&amp;client=${key}" download>Download CSV</a></div>`);
+		for (let i = 0; i < 9; i++) {
 			await recordAudit(env, { alias: "act-one", clientId, clientName: "Activity App", meta: {}, outcome: "ok", tool: "create_draft" });
 		}
-		const paged = await activity(`?client=${key}`);
-		expect(paged).toContain(`<a class="btn" href="/settings?client=${key}&amp;page=2#activity">Older</a>`);
-		const second = await activity(`?client=${key}&page=2`);
-		expect(second).toContain(`<a class="btn" href="/settings?client=${key}#activity">Newer</a>`);
-		expect(second).toContain("<strong>send_message</strong>");
+		const many = await activity(`?client=${key}&account=act-one&reads=show`);
+		expect(many.match(/<tr>\n<td class="muted nowrap">/g)).toHaveLength(ROW_LIMIT);
+		expect(many).toContain(`<a class="btn" href="/export.csv?table=activity&amp;account=act-one&amp;client=${key}&amp;reads=show" download>Download CSV</a><span class="muted small">Showing 5 of 10</span>`);
+		expect(many).not.toContain("Older");
+		expect(many).not.toContain("page=");
 		await deleteAccount(env, "act-one");
 		await deleteAccount(env, "act-two");
 	});
@@ -1113,13 +1188,13 @@ describe("page script (menu.js)", () => {
 		const view = el();
 		const root = el({ "[data-rename-open]": opener, "[data-rename-view]": view, "form[data-rename-form]": form });
 		const closeLink = el({}, { getAttribute: () => "/link" });
-		const drawer = options.drawer ? el({ "a[data-drawer-close]": closeLink }) : null;
+		const drawer = options.drawer ? el({ "a[data-modal-close]": closeLink }) : null;
 		const documentListeners: Record<string, ((event: any) => void)[]> = {};
 		const assigned: string[] = [];
 		const fakeDocument = {
 			addEventListener: (type: string, listener: (event: any) => void) => (documentListeners[type] ??= []).push(listener),
 			getElementById: () => null,
-			querySelector: (selector: string) => (selector === "[data-drawer]" ? drawer : null),
+			querySelector: (selector: string) => (selector === "[data-modal]" ? drawer : null),
 			querySelectorAll: (selector: string) => (selector === "[data-rename]" ? [root] : []),
 		};
 		const fakeWindow = { location: { assign: (href: string) => assigned.push(href), hash: options.hash ?? "" } };
@@ -1183,6 +1258,23 @@ describe("page script (menu.js)", () => {
 		expect(dom.form.hidden).toBe(true);
 	});
 
+	it("returns focus to the card that opened the modal once it is closed", () => {
+		const card = { className: "card-link", focused: false, focus() { this.focused = true; } };
+		const other = { className: "panel", focused: false, focus() { this.focused = true; } };
+		for (const [target, expected] of [[card, true], [other, false]] as const) {
+			new Function("document", "window", MENU_JS)(
+				{
+					addEventListener: () => undefined,
+					getElementById: (id: string) => (id === "acct-work" ? target : null),
+					querySelector: () => null,
+					querySelectorAll: () => [],
+				},
+				{ location: { assign: () => undefined, hash: "#acct-work" } },
+			);
+			expect(target.focused).toBe(expected);
+		}
+	});
+
 	it("moves focus into the detail view and closes it on Escape", () => {
 		const dom = mount({ drawer: true });
 		expect(focused).toBe(dom.drawer);
@@ -1200,5 +1292,193 @@ describe("page script (menu.js)", () => {
 		expect(details.open).toBe(false);
 		expect(focused).toBe(summary);
 		expect(dom.assigned).toHaveLength(1);
+	});
+});
+
+describe("Download CSV", () => {
+	const text = async (path: string, cookie: string) => {
+		const res = await get(path, cookie);
+		expect(res.status, path).toBe(200);
+		return res.text();
+	};
+
+	it("escapes commas, quotes and line breaks, and defuses formulas", () => {
+		expect(csvCell("plain")).toBe("plain");
+		expect(csvCell(12)).toBe("12");
+		expect(csvCell(undefined)).toBe("");
+		expect(csvCell("a,b")).toBe('"a,b"');
+		expect(csvCell('say "hi"')).toBe('"say ""hi"""');
+		expect(csvCell("two\nlines")).toBe('"two\nlines"');
+		expect(csvCell("cr\rhere")).toBe('"cr\rhere"');
+		for (const formula of ["=1+1", "+1", "-1", "@SUM(A1)", "\t=1", "\r=1"]) {
+			expect(csvCell(formula).replace(/^"/, "").startsWith("'"), formula).toBe(true);
+		}
+		expect(csvCell('=HYPERLINK("http://evil.example","x")')).toBe(`"'=HYPERLINK(""http://evil.example"",""x"")"`);
+		// A minus or equals sign that is not first is left alone.
+		expect(csvCell("re-link")).toBe("re-link");
+		expect(csvCell("a=b")).toBe("a=b");
+		expect(csvDocument(["a", "b"], [[1, "x,y"], ["=z", ""]])).toBe('a,b\r\n1,"x,y"\r\n\'=z,\r\n');
+	});
+
+	it("gives no data without the owner's session", async () => {
+		mockGoogle();
+		const stale = await signIn();
+		await post("/logout", stale.cookie, { csrf_token: stale.csrf });
+		for (const cookie of [undefined, "__Host-GOBRIDGE_SESSION=forged.value", stale.cookie]) {
+			for (const table of ["activity", "usage", "client-writes", "client-connections", "account-clients", "nope"]) {
+				const res = await get(`/export.csv?table=${table}`, cookie);
+				expect(res.status, table).toBe(302);
+				expect(new URL(res.headers.get("Location")!).hostname).toBe("accounts.google.com");
+				expect(await res.text()).toBe("");
+				expect(res.headers.get("Content-Disposition")).toBeNull();
+			}
+		}
+		const owner = await signIn();
+		const other = { ...env, ALLOWED_EMAIL: "someone-else@example.com", OAUTH_PROVIDER: {} } as any;
+		const locked = await OwnerPages.fetch(new Request(`${BASE}/export.csv?table=activity`, { headers: { Cookie: owner.cookie } }), other);
+		expect(locked.status).toBe(302);
+		// Export is GET only.
+		expect((await post("/export.csv?table=activity", owner.cookie, { csrf_token: owner.csrf })).status).toBe(404);
+	});
+
+	it("exports every row the page's filters match, with ISO times and safe cells", async () => {
+		mockGoogle();
+		await account("csv-one");
+		await account("csv-two");
+		await allow("https://csv.example/cb");
+		const clientId = await register("CSV App", ["https://csv.example/cb"]);
+		const key = await groupKey({ clientName: "CSV App", redirectUris: ["https://csv.example/cb"] });
+		for (let i = 0; i < 8; i++) {
+			await recordAudit(env, { alias: "csv-one", clientId, clientName: "CSV App", meta: {}, outcome: "ok", tool: "create_draft" });
+		}
+		await recordAudit(env, {
+			alias: "csv-two", clientId, clientName: "CSV App", outcome: "ok", tool: "send_message",
+			meta: { recipients: ["a@example.com", "b@example.com"], subject: 'Lunch, "maybe"\nTuesday' },
+		});
+		await recordAudit(env, {
+			alias: "csv-two", clientId: "csv-gone", clientName: "@evil, app", outcome: "ok", tool: "send_message",
+			meta: { subject: '=HYPERLINK("http://evil.example","click")' },
+		});
+		await recordReadAudit(env, { alias: "csv-two", clientId, clientName: "CSV App", outcome: "ok", resultCount: 3, tool: "search_threads" });
+		const owner = await signIn("/settings");
+
+		const res = await get(`/export.csv?table=activity&client=${key}`, owner.cookie);
+		expect(res.status).toBe(200);
+		expect(res.headers.get("Content-Type")).toBe("text/csv; charset=utf-8");
+		expect(res.headers.get("Content-Disposition")).toMatch(/^attachment; filename="gobridge-activity-\d{4}-\d{2}-\d{2}\.csv"$/);
+		expect(res.headers.get("Cache-Control")).toBe("no-store");
+		expect(res.headers.get("X-Content-Type-Options")).toBe("nosniff");
+		const byClient = await res.text();
+		const lines = byClient.trimEnd().split("\r\n");
+		expect(lines[0]).toBe("time,ai_client,account,action,kind,outcome,details");
+		// All 9 writes of this client (the page shows 5), no reads, nobody else's rows.
+		expect(byClient.match(/,CSV App,/g)).toHaveLength(9);
+		expect(byClient).not.toContain("search_threads");
+		expect(byClient).not.toContain("evil");
+		// ISO timestamps, never "2 h ago".
+		expect(lines[1]).toMatch(/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z,CSV App,csv-(one|two),/);
+		expect(byClient).not.toMatch(/ ago|just now/);
+		// Commas, quotes and the line break inside one quoted cell.
+		expect(byClient).toContain('"To: a@example.com, b@example.com; Subject: Lunch, ""maybe""\nTuesday"');
+
+		// Account filter and the reads toggle, exactly as on the page.
+		const twoOnly = await text(`/export.csv?table=activity&client=${key}&account=csv-two`, owner.cookie);
+		expect(twoOnly.trimEnd().split("\r\n")).toHaveLength(2);
+		const withReads = await text(`/export.csv?table=activity&client=${key}&account=csv-two&reads=show`, owner.cookie);
+		expect(withReads).toContain(",search_threads,read,ok,Items returned: 3");
+		expect(withReads.match(/,CSV App,/g)).toHaveLength(2);
+
+		// Formula injection: a cell that starts with = or @ is prefixed with an apostrophe.
+		const everything = await text("/export.csv?table=activity&account=csv-two", owner.cookie);
+		expect(everything).toContain(`"'@evil, app"`);
+		expect(everything).not.toMatch(/(^|,)"?[=@]/m);
+		expect(everything).toContain(`Subject: =HYPERLINK(""http://evil.example"",""click"")`);
+
+		// Unknown filter values are ignored, like on the page; nothing is echoed.
+		const loose = await text(`/export.csv?table=activity&client=${encodeURIComponent("<script>")}&account=zz-none`, owner.cookie);
+		expect(loose).not.toContain("script");
+		expect(loose.split("\r\n").length).toBeGreaterThan(10);
+
+		await deleteAccount(env, "csv-one");
+		await deleteAccount(env, "csv-two");
+	});
+
+	it("exports the usage, client and account lists, and refuses unknown names without echoing them", async () => {
+		mockGoogle();
+		for (const linked of await listAccounts(env)) await deleteAccount(env, linked.alias);
+		for (let i = 1; i <= 7; i++) await account(`usage-${i}`);
+		const counter = env.USAGE_COUNTER.get(env.USAGE_COUNTER.idFromName("usage-7"));
+		for (let i = 0; i < 4; i++) await counter.take("send", 25);
+		await allow("https://lists.example/cb");
+		const first = await register("Lists App", ["https://lists.example/cb"]);
+		for (let i = 0; i < 6; i++) await register("Lists App", ["https://lists.example/cb"]);
+		const key = await groupKey({ clientName: "Lists App", redirectUris: ["https://lists.example/cb"] });
+		for (let i = 0; i < 7; i++) {
+			await recordAudit(env, { alias: "usage-7", clientId: first, clientName: "Lists App", meta: { subject: "never in this file" }, outcome: i ? "ok" : "rate_limited", tool: "create_event" });
+		}
+		for (let i = 0; i < 6; i++) {
+			await recordAudit(env, { alias: "usage-7", clientId: `gone-${i}`, clientName: `Gone ${i}`, meta: {}, outcome: "ok", tool: "create_draft" });
+		}
+		const owner = await signIn("/settings");
+
+		// Usage by account: 5 of 7 cards on the page, all 7 in the file.
+		const settings = await text("/settings", owner.cookie);
+		const usageSection = settings.split("<h2>Usage by account</h2>")[1].split("<h2>Status</h2>")[0];
+		expect(usageSection.match(/<div class="meters">/g)).toHaveLength(ROW_LIMIT);
+		expect(usageSection).toContain('<a class="btn" href="/export.csv?table=usage" download>Download CSV</a><span class="muted small">Showing 5 of 7</span>');
+		const usage = (await text("/export.csv?table=usage", owner.cookie)).trimEnd().split("\r\n");
+		expect(usage[0]).toBe("account,email,status,emails_sent_today,daily_send_cap,writes_this_hour,write_limit,reads_this_hour,read_limit,files_shared_today,daily_share_cap");
+		expect(usage).toHaveLength(8);
+		expect(usage[7]).toMatch(/^usage-7,person\d+@example\.com,connected,4,25,0,60,0,300,0,10$/);
+
+		// Client modal: 5 writes and 5 connections shown, everything in the files.
+		const modal = (await text(`/clients?open=${key}`, owner.cookie)).split('<div class="modal"')[1];
+		expect(modal.match(/<li class="row"><div class="row-main"><span class="mono">/g)).toHaveLength(ROW_LIMIT);
+		expect(modal).toContain(`<a class="btn" href="/export.csv?table=client-writes&amp;client=${key}" download>Download CSV</a><span class="muted small">Showing 5 of 7</span>`);
+		expect(modal.match(/<dt>Client ID<\/dt>/g)).toHaveLength(ROW_LIMIT);
+		expect(modal).toContain(`<a class="btn" href="/export.csv?table=client-connections&amp;client=${key}" download>Download CSV</a><span class="muted small">Showing 5 of 7</span>`);
+		const writes = (await text(`/export.csv?table=client-writes&client=${key}`, owner.cookie)).trimEnd().split("\r\n");
+		expect(writes[0]).toBe("time,ai_client,account,action,outcome");
+		expect(writes).toHaveLength(8);
+		expect(writes.filter((line) => line.endsWith(",Lists App,usage-7,create_event,ok"))).toHaveLength(6);
+		expect(writes.filter((line) => line.endsWith(",rate_limited"))).toHaveLength(1);
+		// Like the modal's list: account, action and time only.
+		expect(writes.join()).not.toContain("never in this file");
+		const connections = (await text(`/export.csv?table=client-connections&client=${key}`, owner.cookie)).trimEnd().split("\r\n");
+		expect(connections[0]).toBe("ai_client,registered_as,client_id,registered,grants,connected_since,redirect_urls,allowed");
+		expect(connections).toHaveLength(8);
+		expect(connections.some((line) => line.includes(`,${first},`) && line.endsWith(",0,,https://lists.example/cb,yes"))).toBe(true);
+
+		// Account modal: 5 of 7 clients shown, all 7 in the file.
+		const accountModal = (await text("/link?open=usage-7", owner.cookie)).split('<div class="modal"')[1];
+		expect(accountModal.match(/<li class="row">/g)).toHaveLength(ROW_LIMIT);
+		expect(accountModal).toContain('<a class="btn" href="/export.csv?table=account-clients&amp;account=usage-7" download>Download CSV</a><span class="muted small">Showing 5 of 7</span>');
+		const clients = (await text("/export.csv?table=account-clients&account=usage-7", owner.cookie)).trimEnd().split("\r\n");
+		expect(clients[0]).toBe("account,ai_client,status,last_active,writes");
+		expect(clients).toHaveLength(8);
+		expect(clients.some((line) => /^usage-7,Lists App,registered,\d{4}-\d{2}-\d{2}T[\d:.]+Z,6$/.test(line))).toBe(true);
+		expect(clients.filter((line) => line.includes(",no longer registered,"))).toHaveLength(6);
+
+		// A list with 5 rows or fewer still has the button, with no "Showing" hint.
+		const small = (await text("/link?open=usage-1", owner.cookie)).split('<div class="modal"')[1];
+		expect(small).toContain('<a class="btn" href="/export.csv?table=account-clients&amp;account=usage-1" download>Download CSV</a></div>');
+		expect(small).not.toContain("Showing");
+
+		for (const bad of [
+			"/export.csv",
+			"/export.csv?table=secrets",
+			`/export.csv?table=client-writes&client=${encodeURIComponent("<script>alert(7)</script>")}`,
+			"/export.csv?table=client-connections&client=AAAAAAAAAAAAAAAA",
+			"/export.csv?table=account-clients&account=never-linked-zz",
+			"/export.csv?table=account-clients",
+		]) {
+			const res = await get(bad, owner.cookie);
+			expect(res.status, bad).toBe(404);
+			const body = await res.text();
+			expect(body).not.toContain("alert(7)");
+			expect(body).not.toContain("never-linked-zz");
+			expect(res.headers.get("Content-Disposition")).toBeNull();
+		}
+		for (let i = 1; i <= 7; i++) await deleteAccount(env, `usage-${i}`);
 	});
 });

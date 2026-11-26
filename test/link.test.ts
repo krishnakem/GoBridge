@@ -1,6 +1,6 @@
 import { env, SELF } from "cloudflare:test";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { getAccount, getRefreshToken, markNeedsRelink, aliasesNeedingRelink } from "../src/accounts";
+import { getAccount, getRefreshToken, listAccounts, markNeedsRelink, aliasesNeedingRelink } from "../src/accounts";
 import { decryptSecret, encryptSecret, sha256Base64Url } from "../src/crypto";
 import { grantedScopesMatch, hasCurrentScopes, LINK_SCOPES, TOOL_SCOPES } from "../src/google";
 import { listAudit, writeUsage } from "../src/guardrails";
@@ -588,6 +588,42 @@ describe("linking an account", () => {
 		mockGoogle({ linkedClaims: first.claims, refreshToken: "1//fake-replacement-refresh-token" });
 		expect((await linkAccount(session, first.alias)).res.status).toBe(303);
 		expect(await getRefreshToken(env, first.alias)).toBe("1//fake-replacement-refresh-token");
+	});
+});
+
+describe("re-linking an account", () => {
+	it("runs Google sign-in again from the account's Re-link button and keeps the alias", async () => {
+		const { alias, claims } = fresh();
+		mockGoogle({ linkedClaims: claims });
+		const session = await ownerSession();
+		expect((await linkAccount(session, alias)).res.status).toBe(303);
+		await markNeedsRelink(env, alias);
+		const before = JSON.parse((await stored(alias))!);
+
+		// The button is a POST form with the CSRF token and the account's own alias.
+		const modal = await (await SELF.fetch(`${BASE}/link?open=${alias}`, { headers: { Cookie: session.cookie } })).text();
+		expect(modal).toMatch(
+			new RegExp(`<form method="post" action="/link">\\n<input type="hidden" name="csrf_token" value="${session.csrf}">\\n<input type="hidden" name="alias" value="${alias}">\\n<button type="submit" title="[^"]+">Re-link</button>`),
+		);
+		expect(modal).not.toContain("Re-connect");
+
+		// Google hands back a new refresh token for the same Google account.
+		vi.mocked(globalThis.fetch).mockRestore();
+		const calls = mockGoogle({ linkedClaims: claims, refreshToken: "1//fake-google-refresh-token-two" });
+		const { consent, res } = await linkAccount(session, alias);
+		expect(consent.hostname).toBe("accounts.google.com");
+		expect(res.status).toBe(303);
+		expect(res.headers.get("Location")).toBe("/link?msg=linked");
+
+		// Same alias, same Google account, the new token, and the re-login flag cleared.
+		const after = JSON.parse((await stored(alias))!);
+		expect(after).toMatchObject({ alias, email: claims.email, sub: claims.sub });
+		expect(after.ciphertext).not.toBe(before.ciphertext);
+		expect(await getRefreshToken(env, alias)).toBe("1//fake-google-refresh-token-two");
+		expect(await aliasesNeedingRelink(env)).not.toContain(alias);
+		expect((await listAccounts(env)).filter((account) => account.sub === claims.sub)).toHaveLength(1);
+		// Nothing was revoked at Google on the way.
+		expect(calls.revoked).toHaveLength(0);
 	});
 });
 
