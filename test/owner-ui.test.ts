@@ -294,7 +294,13 @@ describe("static assets", () => {
 			"/static/logo-256.PNG",
 			"/static/logo.svg/",
 			"/logo.svg",
-			"/favicon.svg",
+			"/static/favicon.svg",
+			"/static/favicon-64.png",
+			"/favicon-64.png",
+			"/icon-192.png",
+			"/static/icon-192.PNG",
+			"/manifest.json",
+			"/static/site.webmanifest",
 		]) {
 			const res = await get(path);
 			expect(res.status, path).toBe(404);

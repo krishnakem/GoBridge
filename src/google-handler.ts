@@ -2,7 +2,7 @@ import type { AuthRequest, OAuthHelpers } from "@cloudflare/workers-oauth-provid
 import { Hono } from "hono";
 import { checkClient } from "./allowed-clients";
 import { verifyOwner } from "./auth";
-import { renderClientNotAllowedPage, renderMessagePage } from "./html";
+import { renderClientNotAllowedPage, renderLandingPage, renderMessagePage } from "./html";
 import { LinkHandler } from "./link-handler";
 import { OwnerPages } from "./owner-pages";
 import { finishOwnerLogin, OWNER_LOGIN_STATE_PREFIX } from "./session";
@@ -73,11 +73,11 @@ async function refuseUnlistedClient(
 // Health check: no data, no auth.
 app.get("/health", (c) => c.text("ok"));
 
-// The bare worker URL: a fixed redirect to /link (which requires owner sign-in).
-// No data, no cookies, and only GET; every other method on / is 404.
-app.get("/", (c) =>
-	c.body(null, 302, { "Cache-Control": "no-store", Location: "/link" }),
-);
+// The bare worker URL: a fixed, public landing page (logo, one sentence, a
+// "Manage" link to /link) whose <head> names the icons and the web manifest,
+// so favicon crawlers find the GoBridge logo. No session lookup, no cookies,
+// no owner data, no logging. GET (and HEAD) only; every other method is 404.
+app.get("/", () => renderLandingPage());
 
 app.get("/authorize", async (c) => {
 	let oauthReqInfo: AuthRequest;
@@ -302,8 +302,9 @@ app.get("/callback", async (c) => {
 // /clients/revoke, /settings, /logout (plus the public /signed-out notice)
 app.route("/", LinkHandler);
 app.route("/", OwnerPages);
-// Public, data-free files: /static/app.css, /static/menu.js and the logo
-// (/favicon.ico, /favicon.png, /apple-touch-icon.png, /static/logo*.{svg,png})
+// Public, data-free files: /static/app.css, /static/menu.js, the logo
+// (/favicon.{ico,png,svg}, /apple-touch-icon.png, /static/logo*.{svg,png},
+// /static/icon-{192,512}.png) and /site.webmanifest
 app.route("/", StaticAssets);
 
 export { app as GoogleHandler };

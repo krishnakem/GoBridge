@@ -272,31 +272,33 @@ describe("unauthenticated access", () => {
 		}
 	});
 
-	it("redirects GET / to /link with no data, and nothing else on /", async () => {
-		const res = await SELF.fetch(`${BASE}/`, { redirect: "manual" });
-		expect(res.status).toBe(302);
-		expect(res.headers.get("Location")).toBe("/link");
-		expect(res.headers.get("Cache-Control")).toBe("no-store");
-		expect(res.headers.getSetCookie()).toHaveLength(0);
-		expect(await res.text()).toBe("");
-		// Query strings and a session cookie change nothing: it is a fixed redirect.
-		const withQuery = await SELF.fetch(`${BASE}/?next=/audit`, {
+	it("serves a fixed public landing page on GET /, and nothing else on /", async () => {
+		const plain = await SELF.fetch(`${BASE}/`, { redirect: "manual" });
+		expect(plain.status).toBe(200);
+		const page = await plain.text();
+		// A session cookie, a bearer token and a query string change nothing: the bytes are fixed.
+		const withSession = await SELF.fetch(`${BASE}/?next=/audit`, {
 			redirect: "manual",
-			headers: { Cookie: "__Host-GOBRIDGE_SESSION=forged.value" },
+			headers: {
+				Cookie: "__Host-GOBRIDGE_SESSION=forged.value",
+				Authorization: "Bearer not-a-real-token",
+			},
 		});
-		expect(withQuery.status).toBe(302);
-		expect(withQuery.headers.get("Location")).toBe("/link");
+		expect(withSession.status).toBe(200);
+		expect(withSession.headers.getSetCookie()).toHaveLength(0);
+		expect(await withSession.text()).toBe(page);
 		for (const method of ["POST", "PUT", "DELETE", "PATCH"]) {
 			const other = await SELF.fetch(`${BASE}/`, { method, redirect: "manual" });
 			expect(other.status, method).toBe(404);
 			expect(other.headers.get("Location")).toBeNull();
+			await other.body?.cancel();
 		}
 	});
 
 	it("serves exactly the allowlisted routes without a session", async () => {
 		// Unauthenticated routes allowed by CLAUDE.md, with what each must answer.
 		const allowed: [string, number][] = [
-			["/", 302],
+			["/", 200],
 			["/health", 200],
 			["/signed-out", 200],
 			["/static/app.css", 200],
@@ -307,6 +309,10 @@ describe("unauthenticated access", () => {
 			["/favicon.ico", 200],
 			["/favicon.png", 200],
 			["/apple-touch-icon.png", 200],
+			["/favicon.svg", 200],
+			["/static/icon-192.png", 200],
+			["/static/icon-512.png", 200],
+			["/site.webmanifest", 200],
 			["/.well-known/oauth-authorization-server", 200],
 			["/.well-known/oauth-protected-resource/mcp", 200],
 			["/logout", 405],
@@ -440,6 +446,7 @@ describe("owner login", () => {
 			{ src: `${BASE}/static/logo.svg`, mimeType: "image/svg+xml", sizes: ["any"] },
 			{ src: `${BASE}/static/logo-256.png`, mimeType: "image/png", sizes: ["256x256"] },
 			{ src: `${BASE}/static/logo-512.png`, mimeType: "image/png", sizes: ["512x512"] },
+			{ src: `${BASE}/static/icon-192.png`, mimeType: "image/png", sizes: ["192x192"] },
 		]);
 		for (const icon of serverInfo.icons!) {
 			expect(icon.src.startsWith("https://")).toBe(true);

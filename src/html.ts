@@ -36,13 +36,19 @@ const BRAND_HTML = `<img class="brand-logo" src="${iconHref("/favicon.png")}" al
 /** Escapes text for use in HTML content or attribute values. */
 export const escapeHtml = sanitizeText;
 
+/**
+ * A complete HTML page with GoBridge's security headers. `documentTitle` is the
+ * whole <title> (escaped here); `headHtml` is trusted, constant markup added to
+ * the <head> after the icon links.
+ */
 function renderDocument(
-	title: string,
+	documentTitle: string,
 	bodyClass: string,
 	bodyHtml: string,
 	status: number,
 	extraHeaders?: Headers,
 	csp = HTML_SECURITY_HEADERS["Content-Security-Policy"],
+	headHtml = "",
 ): Response {
 	const headers = new Headers(extraHeaders);
 	for (const [name, value] of Object.entries(HTML_SECURITY_HEADERS)) {
@@ -54,8 +60,8 @@ function renderDocument(
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
-<title>GoBridge | ${escapeHtml(title)}</title>
-${ICON_LINKS_HTML}
+<title>${escapeHtml(documentTitle)}</title>
+${ICON_LINKS_HTML}${headHtml}
 <link rel="stylesheet" href="/static/app.css?v=${STATIC_VERSION}">
 <script src="/static/menu.js?v=${STATIC_VERSION}" defer></script>
 </head>
@@ -78,7 +84,7 @@ export function renderPage(
 	extraHeaders?: Headers,
 ): Response {
 	return renderDocument(
-		title,
+		`GoBridge | ${title}`,
 		"simple",
 		`<main class="simple-main">
 <div class="brand">${BRAND_HTML}</div>
@@ -86,6 +92,38 @@ ${bodyHtml}
 </main>`,
 		status,
 		extraHeaders,
+	);
+}
+
+/**
+ * The public landing page at GET / (owner-requested 2026-11-27: connector icon
+ * discovery). Favicon services (Google's s2/favicons, which some AI clients use
+ * for a connector's icon) load the bare origin and read its <link rel="icon">
+ * tags, so / must answer with a page instead of a redirect into sign-in.
+ *
+ * Fixed bytes: no session lookup, no cookies, no owner data, no logging. Same
+ * security headers as every other public page; the only CSP addition is
+ * `manifest-src 'self'` so browsers may fetch /site.webmanifest.
+ */
+export const LANDING_PAGE_CSP = HTML_SECURITY_HEADERS["Content-Security-Policy"].replace(
+	"img-src 'self'; ",
+	"img-src 'self'; manifest-src 'self'; ",
+);
+
+export function renderLandingPage(): Response {
+	return renderDocument(
+		"GoBridge",
+		"simple",
+		`<main class="simple-main">
+<img class="landing-logo" src="${iconHref("/static/logo.svg")}" alt="" width="96" height="96">
+<h1>GoBridge</h1>
+<p>GoBridge is a private MCP connector that lets its owner's AI assistants work with Gmail, Google Calendar and Google Drive, behind sign-in and strict limits.</p>
+<p><a class="btn btn-primary" href="/link">Manage</a></p>
+</main>`,
+		200,
+		undefined,
+		LANDING_PAGE_CSP,
+		`\n<link rel="manifest" href="/site.webmanifest">`,
 	);
 }
 
@@ -282,7 +320,7 @@ export function renderOwnerPage(options: {
 	const { title, active, session, attention, bodyHtml, overlayHtml, dialogHtml } = options;
 	const inert = overlayHtml ? " inert" : "";
 	return renderDocument(
-		title,
+		`GoBridge | ${title}`,
 		"app",
 		`<div class="shell"${inert}>
 <aside class="sidebar">
