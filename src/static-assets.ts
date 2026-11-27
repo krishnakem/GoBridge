@@ -10,22 +10,32 @@
  *   GET /static/logo.svg       the GoBridge logo (MCP connector icon, page brand)
  *   GET /static/logo-256.png   the logo at 256x256 (MCP connector icon)
  *   GET /static/logo-512.png   the logo at 512x512 (MCP connector icon)
- *   GET /favicon.ico           the logo as a 16/32/48 px icon
- *   GET /favicon.png           the logo at 64x64
- *   GET /apple-touch-icon.png  the logo at 180x180
+ *   GET /static/icon-192.png   opaque square logo at 192x192 (web manifest, MCP icon)
+ *   GET /static/icon-512.png   opaque square logo at 512x512 (web manifest)
+ *   GET /favicon.ico           opaque square logo as a 16/32/48 px icon
+ *   GET /favicon.png           opaque square logo at 64x64
+ *   GET /favicon.svg           opaque square logo as SVG
+ *   GET /apple-touch-icon.png  opaque square logo at 180x180
+ *   GET /site.webmanifest      web app manifest naming the icons above
  *
  * These are public: they contain no data, no secrets, and nothing about the
- * owner. Nothing else is served under /static/, and the three root paths are
- * the only files served outside it. The logo bytes come from assets/logo/,
+ * owner. Nothing else is served under /static/, and the five root paths are
+ * the only files served outside it. The favicon / manifest set is opaque
+ * (favicon services and AI clients composite icons on their own background);
+ * logo.svg and logo-256/512.png keep the rounded, transparent artwork. The
+ * logo bytes come from assets/logo/,
  * bundled into the Worker as Data modules (wrangler.jsonc "rules"); the
  * derived files are built by scripts/build-favicon.mjs and committed.
  */
 import { Hono } from "hono";
 import appleTouchIcon from "../assets/logo/apple-touch-icon.png";
+import favicon64 from "../assets/logo/favicon-64.png";
 import faviconIco from "../assets/logo/favicon.ico";
+import faviconSvg from "../assets/logo/favicon.svg";
+import icon192 from "../assets/logo/icon-192.png";
+import icon512 from "../assets/logo/icon-512.png";
 import logo256 from "../assets/logo/logo-256.png";
 import logo512 from "../assets/logo/logo-512.png";
-import favicon64 from "../assets/logo/logo-64.png";
 import logoSvg from "../assets/logo/logo.svg";
 
 export const APP_CSS = `*,*::before,*::after{box-sizing:border-box}
@@ -250,6 +260,7 @@ a.card-add:focus-visible{outline:2px solid #0284c7;outline-offset:2px}
 /* Pages without a session */
 .simple-main{max-width:420px;margin:0 auto;padding:15vh 20px 40px}
 .simple-main .brand{margin-bottom:24px}
+.landing-logo{display:block;width:96px;height:96px;margin:0 0 20px}
 
 @media (min-width:768px){
 .sidebar{display:flex;flex-direction:column;position:sticky;top:0;flex:none;width:224px;height:100vh;background:#fff;border-right:1px solid #e4e4e7}
@@ -650,10 +661,37 @@ export const ICON_FILES: readonly IconFile[] = [
 	iconFile("/static/logo.svg", logoSvg, "image/svg+xml"),
 	iconFile("/static/logo-256.png", logo256, "image/png"),
 	iconFile("/static/logo-512.png", logo512, "image/png"),
+	iconFile("/favicon.svg", faviconSvg, "image/svg+xml"),
+	iconFile("/static/icon-192.png", icon192, "image/png"),
+	iconFile("/static/icon-512.png", icon512, "image/png"),
 ];
 
 /** Changes whenever any logo file changes: the pages link the icons with ?v=<this>. */
 export const ICON_VERSION = contentHash(ICON_FILES.map((file) => file.etag).join(""));
+
+/**
+ * The web app manifest (GET /site.webmanifest), linked from the public landing
+ * page so browsers and favicon crawlers find the opaque 192 / 512 px icons.
+ * Fixed text: names and colours only, nothing about the owner. Icon paths are
+ * origin-relative, so dev and production each point at themselves.
+ */
+export const WEB_MANIFEST = JSON.stringify({
+	name: "GoBridge",
+	short_name: "GoBridge",
+	start_url: "/",
+	display: "browser",
+	theme_color: "#c4261e",
+	background_color: "#ffffff",
+	icons: [
+		{ src: "/static/icon-192.png", sizes: "192x192", type: "image/png", purpose: "any" },
+		{ src: "/static/icon-512.png", sizes: "512x512", type: "image/png", purpose: "any" },
+	],
+});
+const MANIFEST_FILE = iconFile(
+	"/site.webmanifest",
+	new TextEncoder().encode(WEB_MANIFEST).buffer as ArrayBuffer,
+	"application/manifest+json",
+);
 
 /** A versioned same-origin href for one of the ICON_FILES paths. */
 export function iconHref(path: "/favicon.png" | "/apple-touch-icon.png" | "/static/logo.svg"): string {
@@ -676,6 +714,7 @@ export function mcpServerIcons(baseUrl: string): { src: string; mimeType: string
 		{ src: absolute("/static/logo.svg"), mimeType: "image/svg+xml", sizes: ["any"] },
 		{ src: absolute("/static/logo-256.png"), mimeType: "image/png", sizes: ["256x256"] },
 		{ src: absolute("/static/logo-512.png"), mimeType: "image/png", sizes: ["512x512"] },
+		{ src: absolute("/static/icon-192.png"), mimeType: "image/png", sizes: ["192x192"] },
 	];
 }
 
@@ -705,7 +744,7 @@ app.get("/static/menu.js", (c) =>
 	c.body(MENU_JS, 200, { ...STATIC_HEADERS, "Content-Type": "text/javascript; charset=utf-8" }),
 );
 
-for (const file of ICON_FILES) {
+for (const file of [...ICON_FILES, MANIFEST_FILE]) {
 	app.get(file.path, (c) => {
 		const headers: Record<string, string> = { ...STATIC_HEADERS, ETag: file.etag };
 		if (file.contentType === "image/svg+xml") {
